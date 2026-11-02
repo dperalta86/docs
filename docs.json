@@ -1,0 +1,134 @@
+{
+  "$schema": "https://mintlify.com/docs.json",
+  "name": "ChameleonDB",
+  "theme": "aspen",
+  "colors": {
+    "primary": "#7C3AED",
+    "light": "#A78BFA",
+    "dark": "#5B21B6"
+  },
+  "navbar": {
+    "primary": {
+      "type": "github",
+      "href": "https://github.com/chameleon-db/chameleondb"
+    }
+  },
+  "footer": {
+    "socials": {
+      "github": "https://github.com/chameleon-db/chameleondb"
+    }
+  },
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "installation"
+            ]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "concepts/schema-vault",
+              "concepts/integrity-modes",
+              "concepts/schema-language",
+              "concepts/architecture"
+            ]
+          },
+          {
+            "group": "Schema Language",
+            "pages": [
+              "schema/entities",
+              "schema/fields-types",
+              "schema/relations",
+              "schema/constraints",
+              "schema/annotations"
+            ]
+          },
+          {
+            "group": "Query System",
+            "pages": [
+              "queries/overview",
+              "queries/filtering",
+              "queries/relations",
+              "queries/advanced"
+            ]
+          },
+          {
+            "group": "Mutations",
+            "pages": [
+              "mutations/insert",
+              "mutations/update",
+              "mutations/delete",
+              "mutations/safety"
+            ]
+          },
+          {
+            "group": "Guides",
+            "pages": [
+              "guides/migrations",
+              "guides/introspection",
+              "guides/mode-management",
+              "guides/debugging"
+            ]
+          },
+          {
+            "group": "Security",
+            "pages": [
+              "security/overview",
+              "security/vault-integrity",
+              "security/mode-enforcement",
+              "security/best-practices"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "CLI Reference",
+        "groups": [
+          {
+            "group": "Commands",
+            "pages": [
+              "cli/overview",
+              "cli/init",
+              "cli/migrate",
+              "cli/validate",
+              "cli/verify",
+              "cli/status",
+              "cli/journal",
+              "cli/config",
+              "cli/introspect"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "Go SDK",
+            "pages": [
+              "api/engine",
+              "api/query-builder",
+              "api/mutations",
+              "api/error-handling"
+            ]
+          },
+          {
+            "group": "Rust Core",
+            "pages": [
+              "api/parser",
+              "api/type-checker",
+              "api/ffi-interface"
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}
