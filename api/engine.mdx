@@ -18,10 +18,11 @@ func NewEngine() (*Engine, error)
 ```
 
 **Behavior:**
-- Loads schema from `.chameleon/state/schema.merged.cham` (or configured path)
+- Uses the current working directory, so run your program from the project directory
+- Loads the schema from the merged schema path (default `.chameleon/state/schema.merged.cham`, configurable in `.chameleon.yml`)
 - Verifies vault integrity before loading
-- Returns error if vault is not initialized or integrity check fails
-- Ready to use immediately after creation
+- Returns an error if the vault is not initialized or the integrity check fails
+- Does not connect to the database; call `Connect()` next
 
 **Example:**
 
@@ -113,6 +114,10 @@ func (e *Engine) Connect(ctx context.Context, config ConnectorConfig) error
 <ParamField path="MaxIdleTime" type="time.Duration" default="5m">
   Maximum time a connection can be idle
 </ParamField>
+
+<Warning>
+  Connections built from `ConnectorConfig` currently use `sslmode=disable`, and `ParseConnectionString()` ignores query parameters such as `sslmode`. Do not send credentials or sensitive data over untrusted networks with the Go library today. Support for TLS is a known gap.
+</Warning>
 
 **Example with connection string:**
 
@@ -281,21 +286,25 @@ func (e *Engine) WithDebug(level DebugLevel) *Engine
   Show SQL + EXPLAIN output (future)
 </ResponseField>
 
+<Warning>
+  Debug output includes parameter values. Do not enable it where logs can reach people who should not see that data.
+</Warning>
+
 **Example:**
 
 ```go
 import "github.com/chameleon-db/chameleondb/chameleon/pkg/engine"
 
-eng := engine.NewEngine()
+eng, err := engine.NewEngine()
+if err != nil {
+    log.Fatal(err)
+}
 eng.WithDebug(engine.DebugTrace)
 
-// All queries now show debug output
-eng.Query("User").Execute(ctx)
-// Output:
-// [SQL]
-// SELECT * FROM users
-//
-// [TRACE] Query on User: 2.3ms, 5 rows
+// All queries now print debug output
+eng.Query("User").Select("id", "name").Execute(ctx)
+// Prints the SQL text (with $1, $2, ... placeholders), the parameters
+// listed separately, and a trace box with the duration and the row count.
 ```
 
 **Environment variable:**
@@ -311,6 +320,8 @@ export CHAMELEON_DEBUG=trace
 export CHAMELEON_DEBUG=explain
 ```
 
+Accepted values are `1` (SQL), `trace` (SQL, timing and row counts) and `explain` (reserved for a future release).
+
 ## Error Handling
 
 ### Common Errors
@@ -320,7 +331,7 @@ export CHAMELEON_DEBUG=explain
 </ResponseField>
 
 <ResponseField name="integrity check failed" type="error">
-  Schema vault has been tampered with. Run `chameleon verify` to investigate.
+  A vault file does not match its recorded hash. Run `chameleon verify` to see which one.
 </ResponseField>
 
 <ResponseField name="not connected" type="error">
@@ -336,7 +347,7 @@ if err != nil {
         log.Fatal("Run 'chameleon init' to initialize the vault")
     }
     if strings.Contains(err.Error(), "integrity check failed") {
-        log.Fatal("Schema integrity violation detected")
+        log.Fatal("Vault integrity check failed: run 'chameleon verify'")
     }
     log.Fatal(err)
 }

@@ -1,307 +1,182 @@
 ---
 title: Schema Vault
-description: Versioned, immutable schema storage with cryptographic integrity
+description: Versioned schema snapshots with hash checks, stored in your project
 ---
 
-The **Schema Vault** is ChameleonDB's core feature for treating schemas as first-class, immutable artifacts with explicit integrity guarantees.
+The **Schema Vault** records each version of your schema in `.chameleon/vault/`, with a SHA-256 hash per version and an append-only-by-convention log. ChameleonDB checks those hashes before it migrates, so accidental or casual changes to the recorded history are detected.
 
 ## Overview
 
-Unlike traditional databases that treat schema evolution as an auxiliary concern, ChameleonDB governs schemas at runtime through versioning, cryptographic integrity, and automatic verification.
+Schema evolution is usually tracked loosely: migration files, a table in the database, a wiki. The vault gives you one local, versioned record of what the schema was at each migration, and a way to notice when that record no longer matches itself.
 
-<Info>
-The Schema Vault auto-initializes on first migrate with zero configuration required.
-</Info>
+<Note>
+  The vault detects inconsistencies. It does not prevent them and it does not authenticate who made a change. Hashes are stored next to the files they cover, so anyone who can rewrite both can make them agree. See [What the vault does not do](#what-the-vault-does-not-do).
+</Note>
 
-## The Problem
+## What it gives you
 
-Modern database systems enforce strong guarantees over data but treat schema evolution informally:
+- **Versioned snapshots** - Each migration that changes the schema registers `v001`, `v002`, and so on
+- **Hash verification** - SHA-256 of each snapshot is checked before `migrate` runs
+- **Lineage** - Each version records its parent
+- **A log** - `integrity.log` records vault operations (INIT, REGISTER, MIGRATE, MODE, ...)
+- **No setup** - The vault is created by the first `chameleon migrate`
 
-- **Schema drift** happens silently over time
-- **Migration failures** leave databases in unknown states
-- **Authority** for schema changes is implicit, not enforced
-- **Audit trails** are external, incomplete, or missing
-- **Rollback** is manual and error-prone
-
-## The Solution
-
-ChameleonDB's Schema Vault provides:
-
-✅ **Immutable schema versions** — Tamper-proof with SHA256 hashing  
-✅ **Integrity verification** — Automatic checks before every operation  
-✅ **Complete audit trail** — Append-only log, never deleted  
-✅ **Zero-config vault** — Auto-initializes on first migrate  
-✅ **Lineage tracking** — Parent version references  
-
-## Vault Structure
-
-The Schema Vault lives in the `.chameleon/vault/` directory:
+## Structure
 
 ```
 .chameleon/vault/
-├── manifest.json       # Current version + history
-├── integrity.log       # Append-only audit trail
+├── manifest.json       # Current version and history
+├── mode.json           # Current integrity mode
+├── mode_auth.json      # Password verifier (salt + hash)
+├── integrity.log       # Log of vault operations
 ├── versions/
-│   ├── v001.json      # Immutable snapshot
+│   ├── v001.json       # Snapshot of the merged schema
 │   └── v002.json
 └── hashes/
-    ├── v001.hash      # SHA256 verification
+    ├── v001.hash       # SHA-256 of the snapshot
     └── v002.hash
 ```
 
 ### manifest.json
 
-Tracks the current version and complete version history:
-
 ```json
 {
   "current_version": "v002",
-  "history": [
+  "versions": [
     {
       "version": "v001",
       "hash": "3f2a8b9c...",
-      "date": "2026-02-20T10:30:00Z",
+      "timestamp": "2026-11-03T10:30:00Z",
       "author": "dperalta",
-      "parent": null
+      "parent": null,
+      "locked": true,
+      "changes_summary": "Initial schema",
+      "files": ["schemas/example.cham"]
     },
     {
       "version": "v002",
       "hash": "7d4e1c2a...",
-      "date": "2026-02-20T15:45:00Z",
+      "timestamp": "2026-11-03T15:45:00Z",
       "author": "dperalta",
-      "parent": "v001"
+      "parent": "v001",
+      "locked": true,
+      "changes_summary": "...",
+      "files": ["schemas/example.cham"]
     }
-  ]
+  ],
+  "paranoid_mode": "readonly"
 }
 ```
+
+`author` comes from the `USER` environment variable (`unknown` if unset). `paranoid_mode` is a legacy copy; the mode itself lives in `mode.json`. `locked` is a flag in the manifest, not a filesystem protection.
 
 ### versions/
 
-Contains immutable schema snapshots. Once registered, these files are **never modified**.
-
-Example `v001.json`:
-
-```json
-{
-  "version": "v001",
-  "entities": [
-    {
-      "name": "User",
-      "fields": [
-        {"name": "id", "type": "uuid", "primary": true},
-        {"name": "email", "type": "string", "unique": true},
-        {"name": "name", "type": "string"}
-      ]
-    }
-  ]
-}
-```
+Each `vNNN.json` holds the merged schema text exactly as it was when the version was registered (the `.cham` source of all your schema files, merged). The extension is `.json` for historical reasons; the content is the schema source.
 
 ### hashes/
 
-Stores SHA256 hashes for tamper detection. Each version has a corresponding `.hash` file.
+One file per version with the SHA-256 of the corresponding snapshot.
 
 ### integrity.log
 
-Append-only audit trail recording all vault operations:
+One line per event, with a UTC timestamp, the action and key-value details:
 
 ```
-2026-02-20T10:30:00Z [REGISTER] v001 (hash: 3f2a8b9c...) by dperalta
-2026-02-20T10:30:15Z [VERIFY]   v001 ✓ OK
-2026-02-20T15:45:00Z [REGISTER] v002 (hash: 7d4e1c2a..., parent: v001) by dperalta
-2026-02-20T15:45:10Z [VERIFY]   v002 ✓ OK
+2026-11-03T10:30:00Z [INIT]
+2026-11-03T10:30:01Z [REGISTER] version=v001 ...
+2026-11-03T10:30:02Z [MIGRATE] version=v001 status=applied duration=42ms
 ```
+
+The log is appended to and never rewritten by ChameleonDB. Nothing stops someone with file access from editing it.
+
+## How it works
+
+```bash
+chameleon migrate --dry-run      # preview; creates the vault if missing
+chameleon migrate --apply        # register a version and apply
+```
+
+On each `migrate`:
+
+1. The vault is created if it does not exist (mode `readonly`).
+2. Every registered version is verified: the snapshot must hash to the value in `hashes/` **and** in the manifest. A mismatch aborts the command.
+3. If a version already exists and the mode is `readonly`, the command stops. See [Integrity Modes](/concepts/integrity-modes).
+4. The schema files from `schema.paths` are merged and validated, and compared with the current version by hash.
+5. With `--apply`: a new version is registered **before** the SQL runs, then the SQL is executed. If execution fails, the version stays registered and the migration is recorded as failed; running `migrate --apply` again retries it.
+
+If nothing changed, no new version is created.
 
 <Warning>
-The integrity.log is **never deleted**. It provides complete forensics for compliance and debugging.
+  A version is recorded as `applied` when the script runs without error. `migrate` is currently create-only, so a changed schema can register a new version while existing tables stay as they were. The version history tracks your schema, not the live state of the database.
 </Warning>
 
-## How It Works
-
-### 1. Define Your Schema
-
-Create a `schema.cham` file with versioned entities:
-
-```go
-entity User {
-    id: uuid primary,
-    email: string unique,
-    name: string,
-    posts: [Post] via author_id,
-}
-
-entity Post {
-    id: uuid primary,
-    title: string,
-    content: string,
-    published: bool,
-    author_id: uuid,
-    author: User,
-}
-```
-
-### 2. Initialize the Vault
+## Verifying
 
 ```bash
-chameleon init                  # Creates .chameleon/vault/
+chameleon verify
 ```
 
-<Info>
-The vault is created with `readonly` mode by default for security.
-</Info>
+```
+Running Integrity Verification...
 
-### 3. Apply Migration
+Vault:
+  manifest.json is valid
+  v001 integrity OK
+  No tampering detected
+
+Schema Files:
+  schema *.cham exists
+  Matches v001 hash
+
+All checks passed
+```
+
+If a snapshot or hash has been modified, the failing version is listed and the command exits with a non-zero code. `chameleon migrate` runs the same check first and aborts:
+
+```
+✗ INTEGRITY VIOLATION DETECTED
+  ...
+✗ Migration aborted for safety
+```
+
+## Version history
 
 ```bash
-chameleon migrate --apply       # Registers v001, applies migration
+chameleon journal schema          # all versions
+chameleon journal schema v002     # one version: hash, author, parent, summary, files
 ```
 
-This automatically:
-- Computes SHA256 hash of the schema
-- Registers it as version v001
-- Saves snapshot to `vault/versions/v001.json`
-- Saves hash to `vault/hashes/v001.hash`
-- Updates `manifest.json`
-- Logs operation to `integrity.log`
-- Applies migration to database
+## What the vault does not do
 
-### 4. Automatic Verification
+- **It does not authenticate authorship.** `author` is read from an environment variable.
+- **It does not protect against someone who can rewrite the vault.** A snapshot, its hash file and the manifest entry can all be edited together. Use version control, review and CI permissions for that.
+- **It does not cover every file.** `mode.json` and `mode_auth.json` are not covered by the hash check.
+- **It does not check the merged schema the engine loads.** The Go engine verifies the vault, then reads the merged schema from `.chameleon/state/schema.merged.cham` (or the path in `schema.merged_output`) without comparing it with the current version hash. `chameleon verify` does report whether that file matches, but the engine does not enforce it at startup.
+- **It does not set filesystem permissions.** Directories are created `0755` and files `0644`; only `mode_auth.json` is `0600`.
 
-Every operation verifies integrity:
+These are known gaps. Closing them is tracked in the project roadmap.
 
-```bash
-$ chameleon migrate
+## Best practices
 
-🔍 Verifying schema integrity...
-   ✓ Current: v001 (3f2a8b9c...)
-   ✓ No tampering detected
-```
-
-### 5. Tamper Detection
-
-If someone modifies vault files:
-
-```bash
-❌ INTEGRITY VIOLATION DETECTED
-   • v001.json: hash mismatch
-   🚨 Schema vault has been modified!
-   ❌ Migration aborted for safety
-```
-
-<Warning>
-Integrity violations always abort operations. This is a critical safety feature.
-</Warning>
-
-## Version History
-
-View the complete version history:
-
-```bash
-$ chameleon journal schema
-
-📖 Schema Version History
-
-v002 (current) ✓
-├─ Hash: 7d4e1c2a...
-├─ Date: 2026-02-20 15:45:00
-├─ Author: dperalta
-├─ Changes: Added age field to User
-└─ Parent: v001
-
-v001
-├─ Hash: 3f2a8b9c...
-├─ Date: 2026-02-20 10:30:00
-├─ Author: dperalta
-├─ Changes: Initial schema
-└─ Parent: none
-```
-
-## Workflow
-
-The complete vault registration workflow:
-
-```
-1. User modifies schema.cham
-2. chameleon migrate detects changes
-3. Compute SHA256 hash
-4. Register as v002 (parent: v001)
-5. Save snapshot to vault/versions/v002.json
-6. Save hash to vault/hashes/v002.hash
-7. Update manifest.json
-8. Log to integrity.log
-9. Apply migration to database
-```
-
-## Security Model
-
-The vault uses multiple layers of security:
-
-1. **OS Permissions** - File access control (0700)
-2. **Hash Integrity** - SHA256 tamper detection
-3. **Integrity Modes** - Runtime access control (see [Integrity Modes](/concepts/integrity-modes))
-4. **Vault Enforcement** - No schema bypass in v1.0+
-5. **Audit Trail** - Complete forensics
-
-<Note>
-In v1.0+, the Go engine **only** loads schemas from the vault. Direct file loading is disabled for security.
-</Note>
-
-## Migration Registration
-
-Every migration creates a new version:
-
-```bash
-$ chameleon migrate --apply
-
-📦 Registering new schema version...
-   ✓ Registered as v002 (hash: 7d4e1c2a...)
-   ✓ Parent: v001
-
-✅ Migration applied successfully
-✅ Schema v002 locked in vault
-```
-
-## Features
-
-- ✅ **Immutable snapshots** - Once registered, never modified
-- ✅ **SHA256 hash verification** - Tamper detection on every operation
-- ✅ **Lineage tracking** - Parent version references
-- ✅ **Automatic registration** - On every migrate
-- ✅ **Complete audit trail** - integrity.log never deleted
-- ✅ **Zero configuration** - Auto-initializes on first use
-
-## Best Practices
-
-1. **Never manually edit vault files** - Always use `chameleon` CLI
-2. **Commit vault to version control** - Track schema history alongside code
-3. **Set mode password** - Protect against unauthorized schema changes
-4. **Review integrity.log regularly** - Monitor for unexpected changes
-5. **Use readonly mode in production** - Prevent accidental modifications
+1. Do not edit vault files by hand. Use the CLI.
+2. Commit `manifest.json`, `versions/`, `hashes/` and `integrity.log` if you want a shared history. Keep `mode_auth.json` out of version control.
+3. Set a mode password after the first migration.
+4. Run `chameleon verify` in CI.
+5. Review changes to `.chameleon/vault/` in code review like any other source change.
 
 ## Commands
 
 ```bash
-# Initialize vault
-chameleon init
-
-# View version history
-chameleon journal schema
-
-# View specific version
-chameleon journal schema v002
-
-# Verify integrity
-chameleon verify
-
-# View vault status
-chameleon status
-
-# View integrity log
+chameleon migrate --dry-run      # creates the vault on first use
+chameleon verify                 # integrity check (exit 0 = ok)
+chameleon status                 # version, integrity and mode
+chameleon journal schema         # version history
 cat .chameleon/vault/integrity.log
 ```
 
-## Next Steps
+## Next steps
 
-- Learn about [Integrity Modes](/concepts/integrity-modes) for runtime governance
-- Understand the [Schema Language](/concepts/schema-language)
-- Explore the [Architecture](/concepts/architecture)
+- [Integrity Modes](/concepts/integrity-modes) - The local gate on `migrate` and `introspect`
+- [Schema Language](/concepts/schema-language)
+- [Architecture](/concepts/architecture)

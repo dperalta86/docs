@@ -10,6 +10,7 @@ Mutations provide a type-safe API for modifying data. All mutations include:
 - Automatic safety guards (e.g., UPDATE/DELETE requires WHERE clause)
 - Rich error messages with suggestions
 - Debug mode support
+- Values are sent as bound parameters; table and column names are validated against the schema and quoted
 
 ## Insert
 
@@ -38,7 +39,7 @@ func (ib *InsertBuilder) Set(field string, value interface{}) InsertMutation
 </ParamField>
 
 <ParamField path="value" type="interface{}" required>
-  Value to insert (string, int, float64, bool, time.Time, uuid, etc.)
+  Value to insert (string, int, float64, bool, uuid as string, etc.). Support for specific Go types such as time.Time depends on the column type; check your schema before relying on it.
 </ParamField>
 
 ### Execute()
@@ -110,7 +111,7 @@ result, err := eng.Insert("Post").
 
 // Output:
 // [ENTITY] INSERT INTO Post
-// [SQL] INSERT INTO posts (author_id, content, id, published, title) VALUES ($1, $2, $3, $4, $5) RETURNING *
+// [SQL] INSERT INTO "posts" ("author_id", "content", "id", "published", "title") VALUES ($1, $2, $3, $4, $5) RETURNING *
 // [VALUES] [<uuid> "Hello, World!" <uuid> false "My First Post"]
 ```
 
@@ -157,12 +158,18 @@ func (ub *UpdateBuilder) Filter(field string, operator string, value interface{}
 </ParamField>
 
 <ParamField path="operator" type="string" required>
-  Comparison operator: `"eq"`, `"neq"`, `"gt"`, `"gte"`, `"lt"`, `"lte"`, `"like"`
+  Comparison operator: `"eq"`, `"neq"` (or `"ne"`), `"gt"`, `"gte"`, `"lt"`, `"lte"`, `"like"`, `"ilike"`
 </ParamField>
 
 <ParamField path="value" type="interface{}" required>
   Value to compare against
 </ParamField>
+
+<Note>
+  Unlike the Query Builder, `"like"` and `"ilike"` in mutation filters pass your value to PostgreSQL as the pattern itself: `%` and `_` act as wildcards, and you must add them yourself. This difference is known and will be unified.
+</Note>
+
+Filter fields are validated against the entity before any SQL is sent; an unknown field returns an `UnknownFieldError`.
 
 ### Execute()
 
@@ -319,6 +326,10 @@ eng.Delete("User").
     Execute(ctx)
 ```
 
+<Note>
+  When you chain several `Filter()` calls, the conditions are combined with AND. The order in which they appear in the generated SQL is not guaranteed.
+</Note>
+
 **Safety guard:**
 
 ```go
@@ -353,9 +364,8 @@ eng.Insert("User").
 
 // Output:
 // [ENTITY] INSERT INTO User
-// [SQL] INSERT INTO users (email, name) VALUES ($1, $2) RETURNING *
+// [SQL] INSERT INTO "users" ("email", "name") VALUES ($1, $2) RETURNING *
 // [VALUES] ["test@mail.com" "Test User"]
-// [TRACE] INSERT on User: 3.2ms, 1 row
 
 // Update with debug
 eng.Update("Post").
@@ -366,10 +376,13 @@ eng.Update("Post").
 
 // Output:
 // [SQL] UPDATE Post
-// UPDATE posts SET published = $1 WHERE id = $2 RETURNING *
+// UPDATE "posts" SET "published" = $1 WHERE "id" = $2 RETURNING *
 // [VALUES] [true <uuid>]
-// [TRACE] UPDATE on Post: 2.1ms, 1 row
 ```
+
+<Warning>
+  The `[VALUES]` line prints the actual values. Do not enable debug output where logs can reach people who should not see that data.
+</Warning>
 
 ## Validation
 
@@ -510,6 +523,10 @@ func incrementViewCount(eng *engine.Engine, postID string) error {
 }
 ```
 
+<Warning>
+  This read-then-write pattern is not atomic: two concurrent callers can read the same value and overwrite each other. ChameleonDB does not provide transactions or optimistic locking yet.
+</Warning>
+
 ### Batch Operations
 
 ```go
@@ -532,6 +549,10 @@ func createUsers(eng *engine.Engine, users []map[string]string) error {
     return nil
 }
 ```
+
+<Note>
+  Each insert runs on its own. If one fails, the ones before it are already committed. Transaction support is not available yet.
+</Note>
 
 ## See Also
 

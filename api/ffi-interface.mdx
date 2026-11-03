@@ -34,6 +34,9 @@ The FFI bridge provides:
 │  - chameleon_generate_sql()                     │
 │  - chameleon_generate_migration()               │
 │  - chameleon_free_string()                      │
+│  - set_schema_cache()                           │
+│  - clear_schema_cache()                         │
+│  - generate_mutation_sql()                      │
 └────────────────┬────────────────────────────────┘
                  │
                  │ unsafe extern "C"
@@ -159,6 +162,21 @@ pub unsafe extern "C" fn chameleon_generate_sql(
 - `ChameleonResult::ValidationError` - Invalid query
 - `ChameleonResult::InternalError` - Unexpected error
 
+**Result JSON:**
+
+The generated SQL uses numbered placeholders. Values travel separately, as typed parameters:
+
+```json
+{
+  "main_query": "SELECT \"id\", \"name\"\nFROM \"users\"\nWHERE \"email\" LIKE $1 ESCAPE '\\'",
+  "eager_queries": [["posts", "SELECT ... WHERE \"author_id\" = ANY($1)"]],
+  "main_params": [{"String": "%ana%"}],
+  "eager_params": [["ParentIds"]]
+}
+```
+
+`main_params` and `eager_params` are optional in the JSON; `ParentIds` stands for the ids of the parent rows, which the caller supplies when it runs the eager query. Field, relation and ordering names are validated against the schema before they are quoted into the SQL.
+
 ### Generate Migration
 
 ```rust
@@ -177,6 +195,21 @@ pub unsafe extern "C" fn chameleon_generate_migration(
 - `ChameleonResult::Ok` - Migration SQL in `error_out`
 - `ChameleonResult::ValidationError` - Invalid schema
 - `ChameleonResult::InternalError` - Unexpected error
+
+### Schema cache and mutation SQL
+
+```rust
+#[no_mangle]
+pub extern "C" fn set_schema_cache(schema_json: *const c_char) -> *const c_char
+
+#[no_mangle]
+pub extern "C" fn clear_schema_cache() -> *const c_char
+
+#[no_mangle]
+pub extern "C" fn generate_mutation_sql(/* see chameleon-core/src/ffi/mod.rs */) -> /* ... */
+```
+
+These functions are part of the exported surface. Their signatures may change while ChameleonDB is alpha; read `chameleon-core/src/ffi/mod.rs` for the current definitions.
 
 ### Free String
 
@@ -201,7 +234,7 @@ pub extern "C" fn chameleon_version() -> *const c_char
 ```
 
 **Returns:**
-- Static string with Rust core version (e.g., "0.1.0-beta")
+- Static string with the Rust core version (the crate version, for example "1.0.0-alpha")
 - **Never** needs to be freed (static lifetime)
 
 ## Result Codes
@@ -395,7 +428,7 @@ Location: `chameleon-core/Cargo.toml`
 ```toml
 [package]
 name = "chameleon"
-version = "0.1.0-beta"
+version = "1.0.0-alpha"
 edition = "2021"
 
 [lib]
@@ -403,16 +436,10 @@ name = "chameleon"
 crate-type = ["rlib", "staticlib", "cdylib"]
 
 [dependencies]
-lalrpop-util = { version = "0.20", features = ["lexer"] }
-regex = "1.10"
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-thiserror = "1.0"
-lazy_static = "1.4"
+# see chameleon-core/Cargo.toml
 
 [build-dependencies]
-lalrpop = "0.20"
-cbindgen = "0.27"
+# see chameleon-core/Cargo.toml
 ```
 
 **Crate types:**
@@ -497,27 +524,7 @@ go build ./cmd/chameleon
 ./chameleon --version
 ```
 
-### Docker Build
-
-```dockerfile
-FROM rust:1.75 AS rust-builder
-WORKDIR /build
-COPY chameleon-core .
-RUN cargo build --release
-
-FROM golang:1.21 AS go-builder
-WORKDIR /build
-COPY --from=rust-builder /build/target/release/libchameleon.so /usr/local/lib/
-RUN ldconfig
-COPY chameleon .
-RUN go build -o chameleon ./cmd/chameleon
-
-FROM ubuntu:22.04
-COPY --from=rust-builder /build/target/release/libchameleon.so /usr/local/lib/
-COPY --from=go-builder /build/chameleon /usr/local/bin/
-RUN ldconfig
-ENTRYPOINT ["chameleon"]
-```
+For installation, see [Installation](/installation).
 
 ## Memory Management
 
@@ -531,44 +538,27 @@ ENTRYPOINT ["chameleon"]
 
 ### Common Pitfalls
 
-**❌ Double-free:**
+**Double free (do not):**
 ```go
 result := C.chameleon_parse_schema(input, &err)
 C.chameleon_free_string(result)
 C.chameleon_free_string(result)  // CRASH!
 ```
 
-**❌ Memory leak:**
+**Memory leak (do not):**
 ```go
 result := C.chameleon_parse_schema(input, &err)
 return C.GoString(result)  // Leak! Never freed
 ```
 
-**✅ Correct:**
+**Correct:**
 ```go
 result := C.chameleon_parse_schema(input, &err)
 defer C.chameleon_free_string(result)
 return C.GoString(result)
 ```
 
-## Performance Characteristics
-
-| Operation | Overhead | Notes |
-|-----------|----------|-------|
-| FFI call | ~100ns | Function call + argument marshaling |
-| String copy (Go → C) | ~50ns/KB | `C.CString()` allocation |
-| String copy (C → Go) | ~50ns/KB | `C.GoString()` allocation |
-| JSON serialization | ~1μs/entity | `serde_json::to_string()` |
-| JSON deserialization | ~2μs/entity | `json.Unmarshal()` in Go |
-
-**Total parse overhead:**
-- Small schema (5 entities): ~500μs
-- Medium schema (20 entities): ~2ms
-- Large schema (100 entities): ~10ms
-
-**Comparison to pure Go parser:**
-- FFI overhead: +30% (but Rust parser is 3x faster)
-- Net result: 2x faster than pure Go
+Performance has not been benchmarked yet.
 
 ## Testing
 
@@ -597,7 +587,7 @@ fn test_parse_schema_success() {
 
 ### Go Tests
 
-Location: `chameleon/internal/ffi/bindings_test.go` (hypothetical)
+Location: `chameleon/internal/ffi/bindings_test.go`
 
 ```go
 func TestParseSchema(t *testing.T) {
@@ -660,20 +650,11 @@ cargo build --release
 nm -D target/release/libchameleon.so | grep chameleon
 ```
 
-### Version Mismatch
+### Mismatched library and CLI
 
-**Error:**
-```
-FFI version mismatch: Go expects 0.1.0, Rust is 0.2.0
-```
+Rebuild or reinstall both the native library and the Go binary from the same release. The Go package and the core must come from the same version.
 
-**Solution:**
 ```bash
-# Check versions
-go run ./cmd/chameleon version
-cargo metadata --format-version 1 | jq -r '.packages[] | select(.name == "chameleon") | .version'
-
-# Rebuild both
 cd chameleon-core && cargo build --release
 cd ../chameleon && go build ./cmd/chameleon
 ```

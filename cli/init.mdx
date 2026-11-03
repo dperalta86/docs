@@ -70,9 +70,6 @@ Next steps:
   chameleon migrate --dry-run
   chameleon migrate --apply
 
-Security tip:
-  Set an admin password to protect privileged/emergency mode changes.
-  Run: chameleon config auth set-password
 ```
 
 ### Initialize in Current Directory
@@ -157,15 +154,16 @@ entity Comment {
 
 ```
 .chameleon/
+├── .gitignore          # ignores state/, journal/ and backups/
 ├── config.yml          # Configuration source
 ├── state/              # State tracking
-│   ├── current.json    # Current state
-│   └── migrations/     # Migration manifest
-├── journal/            # Audit logs (daily rotation)
-│   └── 2026-03-03.log
-├── vault/              # Schema Vault (auto-created on first migrate)
-└── backups/            # Migration backups
+├── journal/            # Operation journal (daily rotation)
+└── backups/
 ```
+
+<Note>
+  The Schema Vault (`.chameleon/vault/`) is created by the first `chameleon migrate`, not by `init`.
+</Note>
 
 ## Behavior
 
@@ -229,48 +227,31 @@ chameleon migrate --apply
 ```
 
 This will:
-- Auto-initialize Schema Vault
-- Register schema as v001
-- Apply migration to database
-- Set vault to `readonly` mode (default)
+- Create the Schema Vault (.chameleon/vault/) on first use
+- Register the schema as v001
+- Run the generated SQL against the database
 
 ### 4. Set Mode Password (Recommended)
 
-```bash
-chameleon config auth set-password
-```
-
-Protects mode upgrades from `readonly` to `standard`/`privileged`/`emergency`.
+The vault is created by the first migration, so the password can only be set after it. New vaults start in `readonly`: from then on `migrate` and `introspect` are blocked until you run `chameleon config set mode=standard`.
 
 ## Version Control
 
-**Commit to Git:**
-- ✅ `.chameleon.yml`
-- ✅ `schemas/`
-- ✅ `README.md`
+Commit `.chameleon.yml`, `schemas/` and `README.md`. `init` already writes a `.chameleon/.gitignore` for `state/`, `journal/` and `backups/`. Add this to your project `.gitignore`:
 
-**Add to .gitignore:**
 ```gitignore
-# ChameleonDB local files
-.chameleon/state/
-.chameleon/journal/
-.chameleon/backups/
-.chameleon/vault/
+.chameleon/vault/mode_auth.json
 ```
 
 <Note>
-The Schema Vault (`.chameleon/vault/`) should generally be ignored in version control, as it's auto-generated during migrations. However, some teams may choose to commit it for additional auditability.
+  `vault/` is not ignored by default. Its `mode_auth.json` holds the hash of the mode password, so keep that file out of version control. Committing the rest of the vault (manifest, versions, hashes) is optional and gives you a shared audit trail.
 </Note>
 
 ## Troubleshooting
 
 ### Permission Denied
 
-```bash
-sudo chameleon init
-```
-
-Or ensure you have write permissions in the target directory.
+Ensure you have write permissions in the target directory.
 
 ### Cannot Create Directory
 
@@ -286,4 +267,4 @@ chameleon init path/to/project/my-app
 - [`chameleon migrate`](/cli/migrate) - Apply schema migrations
 - [`chameleon validate`](/cli/validate) - Validate schema files
 - [`chameleon status`](/cli/status) - Check project status
-- [Configuration Reference](/concepts/schema-vault) - Configure ChameleonDB
+- [chameleon config](/cli/config) - Configure ChameleonDB

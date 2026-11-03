@@ -3,199 +3,174 @@ title: 'CLI Overview'
 description: 'Command-line interface for ChameleonDB schema management'
 ---
 
-The ChameleonDB CLI provides commands for managing database schemas, migrations, and integrity verification.
+The ChameleonDB CLI manages `.cham` schemas, migrations for PostgreSQL, the local Schema Vault and its integrity modes.
 
 ## Installation
 
-### Linux and macOS
+See the [Installation Guide](/installation). In short:
 
 ```bash
+# Linux and macOS
 curl -sSL https://chameleondb.dev/install | sh
 ```
 
-### Windows
+On Windows, download the archive from the [releases page](https://github.com/chameleon-db/chameleondb/releases). It contains `chameleon.exe` and `chameleon.dll`, which must stay in the same directory and be reachable from your `PATH`.
 
-Download the compressed `.gz` file from [chameleondb.dev/windows](https://www.chameleondb.dev/windows).
-
-Extract to get:
-- `chameleon.exe`
-- `chameleon.dll`
-
-<Warning>
-Both files must be kept together. Add to PATH to use in any terminal.
-</Warning>
-
-### Verify Installation
+### Verify the installation
 
 ```bash
-chameleon --version
-# Output: chameleon v1.0-alpha
+chameleon version
 ```
 
-## Environment Variables
+<Note>
+  The version is a subcommand (`chameleon version`). There is no `--version` flag.
+</Note>
+
+## Environment variables
 
 <ParamField path="DATABASE_URL" type="string">
-  Database connection string. Used by migrate, status, and introspect commands.
-  
-  **Example:**
+  PostgreSQL connection string. The default `.chameleon.yml` reads it as `${DATABASE_URL}`; `migrate` uses it to connect.
+
   ```bash
-  export DATABASE_URL="postgresql://user:password@localhost/dbname"
+  export DATABASE_URL="postgresql://user:password@localhost:5432/dbname"
   ```
 </ParamField>
 
-## Command Categories
+<ParamField path="CHAMELEON_MODE_PASSWORD" type="string">
+  Mode password for non-interactive use (for example in CI). It is used by `config set mode=...` and `config auth set-password`. Treat it like any other secret.
+</ParamField>
 
-### Project Initialization
+<ParamField path="USER" type="string">
+  Recorded as the author of each schema version registered by `migrate`. Defaults to `unknown`.
+</ParamField>
 
-- [`chameleon init`](/cli/init) - Initialize a new ChameleonDB project
+## Command categories
 
-### Schema Management
+### Project
 
-- [`chameleon migrate`](/cli/migrate) - Generate and apply migrations
-- [`chameleon validate`](/cli/validate) - Validate schema syntax
-- [`chameleon introspect`](/cli/introspect) - Generate schema from existing database
+- [`chameleon init`](/cli/init) - Initialize a project
+- `chameleon status` - see [`status`](/cli/status)
 
-### Integrity & Monitoring
+### Schema management
 
-- [`chameleon verify`](/cli/verify) - Verify Schema Vault integrity
-- [`chameleon status`](/cli/status) - Show current status
-- [`chameleon journal`](/cli/journal) - View audit logs
+- [`chameleon migrate`](/cli/migrate) - Preview and apply migrations
+- [`chameleon validate`](/cli/validate) - Validate one schema file
+- [`chameleon introspect`](/cli/introspect) - Generate a schema from an existing PostgreSQL database
+- `chameleon check [file]` - Check a schema file (intended for editor integrations)
+
+### Integrity and audit
+
+- [`chameleon verify`](/cli/verify) - Verify the Schema Vault against its recorded hashes
+- [`chameleon status`](/cli/status) - Show schema, vault and mode
+- [`chameleon journal`](/cli/journal) - Read the operation journal and the version history
 
 ### Configuration
 
-- [`chameleon config`](/cli/config) - Manage configuration and modes
+- [`chameleon config`](/cli/config) - Read and set the integrity mode, the mode password and the schema paths
 
-### Utility Commands
+### Utilities
 
-- `chameleon version` - Show ChameleonDB version
-- `chameleon check [file]` - Check schema for errors (for editor integrations)
-- `chameleon query [entity]` - Interactive query execution (for testing)
-- `chameleon uninstall` - Uninstall ChameleonDB from system
+- `chameleon version` - Show the version
+- `chameleon query [entity]` - Run queries from the terminal (for testing)
+- `chameleon uninstall` - Remove ChameleonDB from your system
+- `chameleon dashboard serve` and `chameleon playground-sql serve` - Local development servers
 
-## Project Structure
+<Warning>
+  The dashboard and playground servers are meant for local development. Do not expose them on a network.
+</Warning>
 
-After running `chameleon init`, you'll have:
+## Project structure
+
+After `chameleon init`:
 
 ```
 .
-├── .chameleon.yml          # Configuration (version controlled)
-├── .chameleon/             # Admin directory (local, not versioned)
-│   ├── config.yml          # Source config
-│   ├── state/              # Current DB state
-│   ├── journal/            # Audit logs
-│   ├── vault/              # Schema Vault (versioned schemas)
-│   └── backups/            # Migration backups
+├── .chameleon.yml          # Project configuration
+├── .chameleon/             # Admin directory
+│   ├── .gitignore          # Ignores state/, journal/ and backups/
+│   ├── config.yml          # Source configuration
+│   ├── state/              # Local state
+│   ├── journal/            # Operation journal
+│   └── backups/
 ├── schemas/                # Schema files
 │   └── example.cham        # Example schema
-└── README.md               # Getting started guide
+└── README.md
 ```
 
-## Common Workflows
+The Schema Vault (`.chameleon/vault/`) is created by the first `chameleon migrate`.
 
-### First-Time Setup
+## Common workflows
+
+### First-time setup
 
 ```bash
-# 1. Initialize project
+# 1. Initialize the project
 chameleon init my-project
 cd my-project
 
-# 2. Set database connection
-export DATABASE_URL="postgresql://user:password@localhost/dbname"
+# 2. Point to an empty or disposable database
+export DATABASE_URL="postgresql://user:password@localhost:5432/dbname"
 
-# 3. Edit schema
+# 3. Edit the schema, then validate it
 vim schemas/example.cham
+chameleon validate schemas/example.cham
 
-# 4. Preview migration
+# 4. Preview the migration and read it
 chameleon migrate --dry-run
 
-# 5. Apply migration
+# 5. Apply it
 chameleon migrate --apply
 ```
 
-### Daily Development
+### Checking state
 
 ```bash
-# Check status
-chameleon status
-
-# Edit schema
-vim schemas/users.cham
-
-# Validate changes
-chameleon validate schemas/users.cham
-
-# Apply migration
-chameleon migrate --apply
-
-# View history
-chameleon journal migrations
+chameleon status          # version, vault integrity and mode
+chameleon verify          # detailed integrity check
+chameleon journal schema  # version history
+chameleon journal last    # recent operations
 ```
 
-### Integrity Verification
+## Global flags
 
-```bash
-# Verify vault integrity
-chameleon verify
-
-# View version history
-chameleon journal schema
-
-# Check current mode
-chameleon status
-```
-
-## Global Flags
-
-<ParamField path="--verbose" type="boolean" default="false">
-  Enable verbose output with additional debug information
+<ParamField path="-v, --verbose" type="boolean" default="false">
+  Verbose output
 </ParamField>
 
 <ParamField path="--help" type="boolean">
   Show help for any command
-  
+
   ```bash
   chameleon migrate --help
   ```
 </ParamField>
 
-<ParamField path="--version" type="boolean">
-  Show CLI version
-  
-  ```bash
-  chameleon --version
-  ```
-</ParamField>
-
-## Exit Codes
+## Exit codes
 
 - `0` - Success
-- `1` - General error
-- Non-zero - Command-specific error
+- Non-zero - The command failed (for example validation, integrity or connection errors)
 
-## Getting Help
+## Getting help
 
 ```bash
-# General help
 chameleon --help
-
-# Command-specific help
 chameleon migrate --help
 chameleon journal --help
 ```
 
-## Next Steps
+## Next steps
 
 <CardGroup cols={2}>
-  <Card title="Initialize Project" icon="rocket" href="/cli/init">
+  <Card title="Initialize a project" icon="rocket" href="/cli/init">
     Create a new ChameleonDB project
   </Card>
-  <Card title="Run Migrations" icon="database" href="/cli/migrate">
-    Apply schema changes to database
+  <Card title="Migrations" icon="database" href="/cli/migrate">
+    Preview and apply schema changes
   </Card>
-  <Card title="Verify Integrity" icon="shield" href="/cli/verify">
-    Check Schema Vault integrity
+  <Card title="Verify integrity" icon="shield" href="/cli/verify">
+    Check the Schema Vault
   </Card>
-  <Card title="View Audit Logs" icon="book" href="/cli/journal">
-    Explore operation history
+  <Card title="Journal" icon="book" href="/cli/journal">
+    Operation history
   </Card>
 </CardGroup>
