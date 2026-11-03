@@ -9,15 +9,13 @@ description: 'Query and audit operation logs'
 chameleon journal <subcommand> [flags]
 ```
 
-View and search the operation journal (audit log).
+View the operation journal.
 
 ## Description
 
-The journal is an **append-only log** of all ChameleonDB operations. It provides:
+The journal is an **append-only log by convention**. It is a file in `.chameleon/journal/` with daily rotation, writable by anyone with access to the directory. It is not an integrity guarantee.
 
-- **Complete audit trail** - Every operation is logged
 - **Daily rotation** - Stored in `.chameleon/journal/` with date-based files
-- **Never deleted** - Append-only, immutable history
 - **Multiple formats** - Table or JSON output
 
 Use the journal to:
@@ -28,10 +26,14 @@ Use the journal to:
 
 ## Subcommands
 
-- [`journal last`](#journal-last) - Show last N operations
-- [`journal errors`](#journal-errors) - Show error operations
-- [`journal migrations`](#journal-migrations) - Show migration history
-- [`journal schema`](#journal-schema) - Show schema version history (vault)
+- `journal last [n]` - Last N entries (default 10); `--format=json` supported
+- `journal errors` - Entries with errors
+- `journal migrations` - Migration history
+- `journal schema [version]` - Schema version history from the vault; with a version, its details (hash, author, parent, status, summary, files)
+
+<Note>
+  `journal search` is mentioned in the command's help text but is not implemented. Do not rely on it.
+</Note>
 
 ## Global Flags
 
@@ -137,7 +139,7 @@ chameleon journal errors
 
 **Output:**
 ```
-✓ No errors found
+No errors found
 ```
 
 #### Errors Found
@@ -266,9 +268,9 @@ chameleon journal schema
 
 **Output:**
 ```
-📖 Schema Version History
+Schema Version History
 
-v003 (current) ✓
+v003 (current)
 ├─ Hash: 9e2f5a1b...
 ├─ Date: 2026-03-03 16:10:00
 ├─ Author: dperalta
@@ -304,7 +306,7 @@ Hash:      7d4e1c2a3b5f6e8d9a1b2c3d4e5f6a7b
 Timestamp: 2026-03-03T14:25:00Z
 Author:    dperalta
 Parent:    v001
-Status:    locked ✓
+Status:    locked
 
 📝 Changes Summary:
   Added age field to User
@@ -322,7 +324,7 @@ chameleon journal schema
 
 **Output:**
 ```
-❌ No vault found
+No vault found
    Run 'chameleon migrate' to initialize
 ```
 
@@ -334,7 +336,7 @@ chameleon journal schema v999
 
 **Output:**
 ```
-❌ Version v999 not found
+Version v999 not found
 ```
 
 ---
@@ -370,7 +372,7 @@ Each log entry is JSON:
 ### Daily Rotation
 
 - New file created daily
-- Old files never deleted (append-only)
+- Old files are rotated daily
 - Date format: `YYYY-MM-DD.log`
 
 ## Common Use Cases
@@ -430,7 +432,7 @@ chameleon journal migrations --format=json | \
 ERRORS=$(chameleon journal errors --format=json | jq length)
 
 if [ "$ERRORS" -gt 0 ]; then
-  echo "⚠️  $ERRORS errors detected in journal"
+  echo "$ERRORS errors detected in journal"
   chameleon journal errors
   exit 1
 fi
@@ -470,7 +472,7 @@ chameleon migrate
 ### Cannot Read Journal
 
 ```
-❌ failed to read journal: permission denied
+failed to read journal: permission denied
 ```
 
 **Solution:**

@@ -1,70 +1,65 @@
 ---
 title: 'Quick Start'
-description: 'Get started with ChameleonDB in 5 minutes'
+description: 'Create your first ChameleonDB project'
 ---
 
 # Quick Start Guide
 
-Get started with ChameleonDB in 5 minutes.
+Create a project, declare a schema, preview the SQL and register the first version in the vault.
 
 ## Prerequisites
 
-Before you begin, ensure you have:
-
-- **Go 1.21+** installed
-- **PostgreSQL 14+** running
-- Terminal access (bash, zsh, or PowerShell)
+- **PostgreSQL**, running. Integration tests run against PostgreSQL 16; other versions are not yet verified.
+- **Go 1.25.6 or newer**, only if you use the Go library in your application.
+- Terminal access (bash, zsh, or PowerShell).
 
 ## Installation
 
-See the [Installation Guide](/installation) for detailed instructions on Linux, macOS, and Windows.
+See the [Installation Guide](/installation) for Linux, macOS, Windows and building from source.
 
-Quick install:
+Quick install on Linux and macOS:
 
 ```bash
-# Linux and macOS
 curl -sSL https://chameleondb.dev/install | sh
 ```
 
-Verify installation:
+The install script does not yet verify checksums. If that matters to you, build from source.
+
+Verify the installation:
 
 ```bash
-chameleon --version
-# Output: chameleon v1.0-alpha
+chameleon version
 ```
 
-## Your First ChameleonDB Project
+## Your first project
 
 <Steps>
-  <Step title="Initialize Project">
-    Create a new directory and initialize ChameleonDB:
-    
+  <Step title="Initialize the project">
+    Create a directory and initialize ChameleonDB:
+
     ```bash
     mkdir my-app
     cd my-app
     chameleon init
     ```
-    
-    **What happens:**
-    - Creates `.chameleon/` directory
-    - Initializes Schema Vault
-    - Creates default `schema.cham`
-    - Sets mode to `readonly`
-    
-    **Output:**
-    ```
-    ✅ Created .chameleon/ directory
-    ✅ Schema Vault initialized
-    ✅ Created schema.cham
-    ℹ️  Paranoid Mode: readonly
-    💡 Tip: Set mode password with 'chameleon config auth set-password'
-    ```
+
+    **What it creates:**
+    - `.chameleon/` with local state, journal and backups (not meant for version control)
+    - `.chameleon.yml` with the project configuration
+    - `schemas/example.cham`, an example schema
+    - a `README.md` for the project
+
+    The Schema Vault (`.chameleon/vault/`) is created by your first `chameleon migrate`, and starts in `readonly` mode.
+
+    <Tip>
+      Set a mode password with `chameleon config auth set-password`. It will be asked when you raise the integrity mode.
+    </Tip>
   </Step>
 
-  <Step title="Define Your Schema">
-    Edit `schema.cham` to define your data model:
-    
-    ```go schema.cham
+  <Step title="Define your schema">
+    Edit `schemas/example.cham` (or add more `.cham` files in `schemas/`):
+
+    ```go schemas/example.cham
     entity User {
         id: uuid primary,
         email: string unique,
@@ -83,150 +78,159 @@ chameleon --version
         author: User,
     }
     ```
-    
-    **Validate your schema:**
+
+    Validate it:
+
     ```bash
-    chameleon validate
+    chameleon validate schemas/example.cham
     ```
-    
-    **Output:**
-    ```
-    ✅ Schema validated successfully
-       Entities: 2 (User, Post)
-       Relations: 2 (users.posts, posts.author)
-    ```
+
+    A valid schema ends with `✓ Schema is valid`. Errors include the line, a snippet and, when possible, a suggestion.
   </Step>
 
-  <Step title="Configure Database Connection">
+  <Step title="Configure the database connection">
     Set your PostgreSQL connection string:
-    
+
     ```bash
     export DATABASE_URL="postgresql://user:password@localhost:5432/mydb"
     ```
-    
+
     <Note>
-      Replace `user`, `password`, and `mydb` with your actual PostgreSQL credentials.
+      Replace `user`, `password` and `mydb` with your own values. Do not commit real credentials.
     </Note>
   </Step>
 
-  <Step title="Run Migration">
-    Apply your schema to the database:
-    
+  <Step title="Preview the migration">
     ```bash
-    chameleon migrate --apply
+    chameleon migrate --dry-run
     ```
-    
-    **Output:**
-    ```
-    📦 Initializing Schema Vault...
-       ✓ Created .chameleon/vault/
-       ✓ Registered schema as v001
-       ✓ Hash: 3f2a8b9c...
 
-    📋 Migration Preview:
-    ─────────────────────────────────────────────────
+    This prints the SQL without applying it. For the schema above, the script has this shape (the order of the columns inside each table can vary between runs):
+
+    ```sql
+    DROP TABLE IF EXISTS posts CASCADE;
+
+    DROP TABLE IF EXISTS users CASCADE;
+
     CREATE TABLE users (
         id UUID PRIMARY KEY,
-        email VARCHAR UNIQUE NOT NULL,
         name VARCHAR NOT NULL,
+        email VARCHAR NOT NULL UNIQUE,
         created_at TIMESTAMP NOT NULL DEFAULT NOW()
     );
 
     CREATE TABLE posts (
         id UUID PRIMARY KEY,
         title VARCHAR NOT NULL,
-        content TEXT,
+        content VARCHAR NOT NULL,
         published BOOLEAN NOT NULL DEFAULT false,
         created_at TIMESTAMP NOT NULL DEFAULT NOW(),
-        author_id UUID REFERENCES users(id)
+        author_id UUID NOT NULL,
+        FOREIGN KEY (author_id) REFERENCES users(id)
     );
-    ─────────────────────────────────────────────────
-
-    ✅ Migration applied successfully
-    ✅ Schema v001 locked in vault
     ```
-    
-    <Tip>
-      Use `--dry-run` flag to preview SQL without applying: `chameleon migrate --dry-run`
-    </Tip>
+
+    Read it before you apply it: the `DROP TABLE` statements remove existing tables and their data.
   </Step>
 
-  <Step title="Use in Your Application">
-    Initialize a Go module and add ChameleonDB:
-    
-    ```bash
-    go mod init my-app
-    go get github.com/chameleon-db/chameleondb/chameleon
-    ```
-    
-    Create `main.go`:
-    
-    ```go main.go
-    package main
+  <Step title="Raise the mode and apply">
+    The first `chameleon migrate --apply` is not blocked. It creates the vault in `readonly` mode, so **later** migrations are blocked until you run `chameleon config auth set-password` and `chameleon config set mode=standard`.
 
-    import (
-        "context"
-        "fmt"
-        "log"
-        
-        "github.com/chameleon-db/chameleondb/chameleon/pkg/engine"
-        "github.com/google/uuid"
-    )
+    <Warning>
+      `migrate --apply` drops and recreates every table in your schema. Point it at an empty or disposable database and read `--dry-run` first. See [`chameleon migrate`](/cli/migrate).
+    </Warning>
 
-    func main() {
-        ctx := context.Background()
-        
-        // Connect (loads schema from vault automatically)
-        eng, err := engine.NewEngine()
-        if err != nil {
-            log.Fatal(err)
-        }
-        defer eng.Close()
-        
-        // Insert user
-        result, err := eng.Insert("User").
-            Set("id", uuid.New().String()).
-            Set("email", "ana@mail.com").
-            Set("name", "Ana Garcia").
-            Execute(ctx)
-        
-        if err != nil {
-            log.Fatal(err)
-        }
-        
-        fmt.Printf("User created: %v\n", result.ID)
-        
-        // Query users
-        users, err := eng.Query("User").
-            Filter("email", "eq", "ana@mail.com").
-            Execute(ctx)
-        
-        if err != nil {
-            log.Fatal(err)
-        }
-        
-        for _, user := range users.Rows {
-            fmt.Printf("User: %s <%s>\n", user["name"], user["email"])
-        }
-    }
-    ```
-    
-    **Run your application:**
     ```bash
-    go run main.go
+    chameleon config auth set-password
+    chameleon config set mode=standard
+    chameleon migrate --apply
     ```
-    
-    **Output:**
-    ```
-    User created: 550e8400-e29b-41d4-a716-446655440000
-    User: Ana Garcia <ana@mail.com>
+
+    `migrate --apply` verifies the vault, registers the schema as `v001` (with its SHA-256 hash), and then runs the SQL against your database.
+  </Step>
+
+  <Step title="Inspect the history">
+    ```bash
+    chameleon journal schema
+    chameleon status
+    chameleon verify
     ```
   </Step>
 </Steps>
 
-## Query with Relations
+## Use the Go library
 
-ChameleonDB makes it easy to query related data:
+The Go library is a supporting component. It calls the Rust core through cgo, so the native library must be installed first. See [Using ChameleonDB as a Go SDK](/installation#using-chameleondb-as-a-go-sdk).
+
+Run your program from the project directory. `NewEngine()` loads the schema from the vault and verifies its integrity.
+
+```bash
+go mod init my-app
+go get github.com/chameleon-db/chameleondb/chameleon@latest
+```
+
+```go main.go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+    "os"
+
+    "github.com/chameleon-db/chameleondb/chameleon/pkg/engine"
+    "github.com/google/uuid"
+)
+
+func main() {
+    ctx := context.Background()
+
+    // Loads the schema from the vault and verifies its integrity.
+    eng, err := engine.NewEngine()
+    if err != nil {
+        log.Fatal(err)
+    }
+    defer eng.Close()
+
+    // Connect to PostgreSQL.
+    config, err := engine.ParseConnectionString(os.Getenv("DATABASE_URL"))
+    if err != nil {
+        log.Fatal(err)
+    }
+    if err := eng.Connect(ctx, config); err != nil {
+        log.Fatal(err)
+    }
+
+    // Insert a user.
+    result, err := eng.Insert("User").
+        Set("id", uuid.New().String()).
+        Set("email", "ana@mail.com").
+        Set("name", "Ana Garcia").
+        Execute(ctx)
+    if err != nil {
+        log.Fatal(err)
+    }
+    fmt.Printf("User created: %v\n", result.ID)
+
+    // Query users.
+    users, err := eng.Query("User").
+        Filter("email", "eq", "ana@mail.com").
+        Execute(ctx)
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    for _, user := range users.Rows {
+        fmt.Printf("User: %s <%s>\n", user["name"], user["email"])
+    }
+}
+```
+
+```bash
+go run main.go
+```
+
+## Query with relations
 
 ```go
 // Query users with their posts (eager loading)
@@ -234,49 +238,52 @@ result, err := eng.Query("User").
     Select("id", "name", "email").
     Include("posts").
     Execute(ctx)
-
 if err != nil {
     log.Fatal(err)
 }
 
 for _, user := range result.Rows {
     fmt.Printf("User: %s\n", user["name"])
-    
-    if posts, ok := result.Relations["posts"]; ok {
-        fmt.Printf("  Posts: %d\n", len(posts))
-        for _, post := range posts {
-            fmt.Printf("  - %s\n", post["title"])
-        }
-    }
+}
+
+if posts, ok := result.Relations["posts"]; ok {
+    fmt.Printf("Loaded %d posts\n", len(posts))
 }
 ```
 
 <Note>
-  Using `Include()` prevents N+1 query problems by eagerly loading related data. ChameleonDB's IdentityMap automatically deduplicates objects in memory.
+  `Include()` loads the related rows in a separate query per relation, instead of one query per parent row. The related rows are returned in `result.Relations`, keyed by relation name.
 </Note>
 
-## Debug Mode
+## Debug mode
 
-See the generated SQL for any query:
+See the generated SQL and its parameters for a query:
 
 ```go
 result, err := eng.Query("User").
+    Select("id", "name", "email").
     Filter("email", "like", "ana").
-    Debug().  // ← Shows SQL
+    Debug().
     Execute(ctx)
 ```
 
-**Output:**
+The SQL text contains placeholders, and the values are listed separately:
+
 ```
-[SQL] Query User
-SELECT * FROM users WHERE email LIKE '%ana%'
+[SQL]
+SELECT "id", "name", "email"
+FROM "users"
+WHERE "email" LIKE $1 ESCAPE '\'
 
-[TRACE] Query on User: 2.3ms, 1 rows
+[PARAMS]
+$1 = String("%ana%")
 ```
 
-## Schema Vault Commands
+<Warning>
+  Debug output prints parameter values. Do not enable it where logs can reach people who should not see that data.
+</Warning>
 
-ChameleonDB tracks every schema change in the Schema Vault:
+## Schema Vault commands
 
 <CodeGroup>
 ```bash View version history
@@ -291,74 +298,47 @@ chameleon status
 chameleon verify
 ```
 
-```bash View specific version
+```bash View a specific version
 chameleon journal schema v001
 ```
 </CodeGroup>
 
-### Example: View Version History
+## Integrity modes
+
+Integrity modes control what the CLI allows. They do not replace database permissions.
 
 ```bash
-$ chameleon journal schema
+# Check the current mode
+chameleon config get mode
 
-📖 Schema Version History
-
-v002 (current) ✓
-├─ Hash: 7d4e1c2a...
-├─ Date: 2026-02-20 15:45:00
-├─ Author: dperalta
-├─ Changes: Added age field to User
-└─ Parent: v001
-
-v001
-├─ Hash: 3f2a8b9c...
-├─ Date: 2026-02-20 10:30:00
-├─ Author: dperalta
-├─ Changes: Initial schema
-└─ Parent: none
-```
-
-## Integrity Modes
-
-ChameleonDB uses integrity modes to control who can modify schemas:
-
-```bash
-# Check current mode
-chameleon status
-
-# Set password for mode upgrades (recommended)
+# Set a password for mode upgrades (recommended)
 chameleon config auth set-password
-# Enter new password: ********
-# ✅ Mode password configured
 
-# Upgrade to allow schema changes
+# Upgrade to allow schema changes (asks for the password)
 chameleon config set mode=standard
-# 🔐 Enter mode password: ********
-# ✅ Mode upgraded to standard
 
 # Downgrade (no password required)
 chameleon config set mode=readonly
-# ✅ Mode downgraded to readonly
 ```
 
 <Warning>
-  In `readonly` mode (the default), schema modifications are blocked. Upgrade to `standard` mode for development.
+  In `readonly` mode (the default), schema modifications are blocked. Raise the mode to `standard` for development.
 </Warning>
 
-## Common Issues
+## Common issues
 
 <AccordionGroup>
   <Accordion title="vault not initialized">
-    **Solution:** Run `chameleon init` in your project directory.
-    
+    The vault is created by `chameleon migrate`. Run it in your project directory (use `--dry-run` first).
+
     ```bash
-    chameleon init
+    chameleon migrate --dry-run
     ```
   </Accordion>
 
-  <Accordion title="readonly mode: blocked">
-    **Solution:** Upgrade to standard mode.
-    
+  <Accordion title="readonly mode: schema modifications are blocked">
+    Raise the integrity mode.
+
     ```bash
     chameleon config auth set-password
     chameleon config set mode=standard
@@ -366,8 +346,8 @@ chameleon config set mode=readonly
   </Accordion>
 
   <Accordion title="integrity violation">
-    **Solution:** Check what changed and view the audit log.
-    
+    A vault file no longer matches its recorded hash. Check what changed and read the audit log.
+
     ```bash
     chameleon verify
     cat .chameleon/vault/integrity.log
@@ -375,41 +355,32 @@ chameleon config set mode=readonly
   </Accordion>
 
   <Accordion title="DATABASE_URL not set">
-    **Solution:** Set the environment variable.
-    
+    Set the environment variable.
+
     ```bash
     export DATABASE_URL="postgresql://user:pass@host:5432/db"
     ```
   </Accordion>
 </AccordionGroup>
 
-## Next Steps
+## Next steps
 
 <CardGroup cols={2}>
   <Card title="Installation Guide" icon="download" href="/installation">
-    Detailed installation for Linux, macOS, and Windows
+    Installation for Linux, macOS and Windows
   </Card>
   <Card title="CLI Reference" icon="terminal" href="/cli/overview">
-    Complete guide to all CLI commands
+    All CLI commands
   </Card>
   <Card title="Query API" icon="code" href="/api/engine">
-    Type-safe query and mutation reference
+    Query and mutation reference for Go
   </Card>
   <Card title="Examples" icon="flask" href="https://github.com/chameleon-db/chameleon-examples">
-    Real-world example applications
+    Example applications
   </Card>
 </CardGroup>
 
-## What You've Learned
-
-- ✅ How to initialize ChameleonDB projects
-- ✅ How to define schemas in `.cham` files
-- ✅ How to run migrations with the Schema Vault
-- ✅ How to query data with the Go SDK
-- ✅ How to use Debug mode to see SQL
-- ✅ How to manage integrity modes
-
-## Getting Help
+## Getting help
 
 - **Documentation**: [https://chameleondb.dev/docs](https://chameleondb.dev/docs)
 - **GitHub Issues**: [https://github.com/chameleon-db/chameleondb/issues](https://github.com/chameleon-db/chameleondb/issues)

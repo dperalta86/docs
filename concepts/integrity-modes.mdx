@@ -1,356 +1,106 @@
 ---
 title: Integrity Modes
-description: Unix-style protection rings for schema governance
+description: A local gate on schema-changing commands, with password-protected upgrades
 ---
 
-Integrity Modes provide **ring-based access control** for schema governance in ChameleonDB. Inspired by Unix protection rings, they enforce explicit authority over schema changes at runtime.
+Integrity Modes are a **local safeguard** on the commands that change your schema or generate one from a database. A mode is stored in the Schema Vault; moving to a less restrictive mode asks for a password.
 
-## Overview
+<Warning>
+  Be clear about what this is. It protects against accidents and casual changes made through the `chameleon` CLI. It is **not** an access-control system: the mode and the password verifier are plain files in `.chameleon/vault/`, and anyone who can write to that directory can change them. Real authority over your database comes from PostgreSQL roles and from who can run the CLI in CI, not from this feature.
+</Warning>
 
-Integrity Modes are ChameleonDB's answer to the question: *Who has authority to change the schema?*
+## The four modes
 
-Unlike traditional databases where schema authority is implicit, ChameleonDB enforces it through **four protection rings** with password-protected escalation.
+| Mode | Ring (naming only) | Default | What it enforces today |
+|------|--------------------|---------|------------------------|
+| `readonly` | R3 | yes | `migrate` and `introspect` stop once a schema version exists |
+| `standard` | R2 | no | `migrate` and `introspect` allowed |
+| `privileged` | R1 | no | Same as `standard`, and allows `config set schema-paths` |
+| `emergency` | R0 | no | Same as `privileged`, with an extra typed confirmation for `schema-paths` |
 
-<Info>
-Integrity Modes work in conjunction with the [Schema Vault](/concepts/schema-vault) to provide complete schema governance.
-</Info>
-
-## The Four Modes
-
-| Mode | Ring | Use Case | Schema Changes | Password Required |
-|------|------|----------|----------------|-------------------|
-| **readonly** | R3 | Production (default) | ❌ Blocked | Upgrade: Yes |
-| **standard** | R2 | Development teams | ✅ Controlled | Upgrade: Yes |
-| **privileged** | R1 | DBAs | ✅ Direct (logged) | Upgrade: Yes |
-| **emergency** | R0 | Incident recovery | ✅ No checks (audited) | Upgrade: Yes |
+`readonly` is the only mode that changes what `migrate` and `introspect` do. `standard`, `privileged` and `emergency` differ today only in which `config` operations they allow. The names describe intent, but there is no reduced validation in `privileged` and no disabled integrity checking in `emergency`: both still run the vault integrity check on `migrate`.
 
 <Note>
-Downgrading modes (e.g., privileged → standard → readonly) **does not** require a password. Only upgrades require authentication.
+  The "ring" labels are a naming convention borrowed from Unix. They do not imply kernel-style isolation.
 </Note>
 
-## Mode Details
+## Lifecycle
 
-### readonly (R3)
-
-**Default mode for production environments.**
-
-- ❌ All schema modifications are **blocked**
-- ✅ Queries and data operations work normally
-- ✅ Integrity verification runs on every operation
-- 🔒 Schema is completely locked
-
-**Use cases:**
-- Production deployments
-- Environments where schema should never change
-- Compliance-sensitive systems
-- Read-only replicas
-
-**Example:**
+1. `chameleon init` does not create the vault, so there is no mode yet.
+2. The first `chameleon migrate` creates the vault. The mode starts as `readonly`.
+3. The first migration itself is **not** blocked, because no version existed when it started. From then on, `migrate` and `introspect` are blocked.
 
 ```bash
-$ chameleon init
-✅ Vault initialized in readonly mode
-💡 Tip: Set mode password with 'chameleon config auth set-password'
-
-$ chameleon migrate --apply
-❌ readonly mode: schema modifications blocked
+chameleon migrate --apply        # first run: creates the vault, applies
+chameleon migrate --apply        # later runs in readonly:
+# Read Only Paranoid Mode is active - schema modifications are blocked
+# Error: readonly mode: schema locked
 ```
 
-<Warning>
-readonly mode is the **fail-safe default**. Even if no password is set, schema changes are blocked.
-</Warning>
-
-### standard (R2)
-
-**Recommended for development teams.**
-
-- ✅ Controlled schema changes allowed
-- ✅ Migrations go through normal validation
-- ✅ All changes logged to integrity.log
-- ✅ Vault verification still enforced
-
-**Use cases:**
-- Development environments
-- Testing environments
-- CI/CD pipelines
-- Team collaboration
-
-**Example:**
+To make changes, set a password and upgrade:
 
 ```bash
-# Upgrade from readonly to standard
-$ chameleon config set mode=standard
-🔐 Enter mode password: ****
-✅ Mode upgraded to standard
-
-# Now migrations work
-$ chameleon migrate --apply
-✅ Schema v002 registered and applied
-```
-
-### privileged (R1)
-
-**For database administrators with direct access.**
-
-- ✅ Direct schema modifications (still logged)
-- ✅ Bypass some validation checks
-- ✅ Emergency fixes without full pipeline
-- ⚠️ All operations heavily audited
-
-**Use cases:**
-- DBA operations
-- Hotfixes
-- Schema repairs
-- Advanced troubleshooting
-
-**Example:**
-
-```bash
-$ chameleon config set mode=privileged
-🔐 Enter mode password: ****
-✅ Mode upgraded to privileged
-⚠️  WARNING: Direct schema access enabled
-💡 All operations will be logged to integrity.log
-```
-
-<Warning>
-privileged mode should be used sparingly and only by authorized DBAs. All operations are logged.
-</Warning>
-
-### emergency (R0)
-
-**For incident recovery only.**
-
-- ✅ All safety checks disabled
-- ✅ Direct database access
-- ✅ Skip integrity verification (emergency only)
-- 🚨 **Everything is audited**
-
-**Use cases:**
-- Production incidents
-- Vault corruption recovery
-- Emergency rollbacks
-- Disaster recovery
-
-**Example:**
-
-```bash
-$ chameleon config set mode=emergency
-🔐 Enter mode password: ****
-🚨 WARNING: EMERGENCY MODE ACTIVATED
-⚠️  All safety checks disabled
-⚠️  Use only for incident recovery
-📝 All operations will be logged
-```
-
-<Warning>
-emergency mode disables integrity checks. Use **only** during incidents. Return to a safer mode immediately after recovery.
-</Warning>
-
-## Password Protection
-
-### Setting a Password
-
-Protect mode upgrades with a password:
-
-```bash
-$ chameleon config auth set-password
-Enter new password: ********
-Confirm password: ********
-✅ Mode password configured
-```
-
-<Info>
-The password is hashed and stored in `.chameleon/vault/auth.json`. Never commit this file to version control.
-</Info>
-
-### Mode Upgrades
-
-Upgrades **always** require the password:
-
-```bash
-# readonly → standard (requires password)
-$ chameleon config set mode=standard
-🔐 Enter mode password: ****
-✅ Mode upgraded to standard
-
-# standard → privileged (requires password)
-$ chameleon config set mode=privileged
-🔐 Enter mode password: ****
-✅ Mode upgraded to privileged
-```
-
-### Mode Downgrades
-
-Downgrades **do not** require a password:
-
-```bash
-# privileged → readonly (no password)
-$ chameleon config set mode=readonly
-✅ Mode downgraded to readonly
-```
-
-## Checking Current Mode
-
-View the current mode with `chameleon status`:
-
-```bash
-$ chameleon status
-
-Schema:
-  Current version:  v001
-  Status:          ✓ Up to date
-
-Vault:
-  Versions:        1 registered
-  Integrity:       ✓ OK
-  Mode:            🔒 readonly (locked)
-```
-
-Or use `chameleon config get mode`:
-
-```bash
-$ chameleon config get mode
-readonly
-```
-
-## Mode Enforcement
-
-Modes are enforced at runtime by the ChameleonDB engine:
-
-```
-1. User: chameleon migrate --apply
-         ↓
-2. Engine: Load current mode from vault
-         ↓
-3. Check: Is mode >= standard?
-         ↓
-4a. YES → Proceed with migration
-4b. NO  → Abort with error
-```
-
-<Note>
-Mode checks happen **before** any database operations. Failed checks abort immediately.
-</Note>
-
-## Audit Trail
-
-All mode changes are logged to `integrity.log`:
-
-```
-2026-02-20T10:30:00Z [MODE] Changed from readonly to standard by dperalta
-2026-02-20T15:45:00Z [MIGRATE] Applied v002 in standard mode
-2026-02-20T16:00:00Z [MODE] Changed from standard to readonly by dperalta
-```
-
-## Common Workflows
-
-### Development Workflow
-
-```bash
-# 1. Set password (once)
-chameleon config auth set-password
-
-# 2. Upgrade to standard for development
-chameleon config set mode=standard
-
-# 3. Make schema changes
-# Edit schema.cham
-
-# 4. Apply migrations
+chameleon config auth set-password        # minimum 8 characters
+chameleon config set mode=standard        # asks for the password
 chameleon migrate --apply
-
-# 5. Downgrade to readonly for deployment
-chameleon config set mode=readonly
-
-# 6. Deploy to production (readonly mode preserved)
+chameleon config set mode=readonly        # downgrade: no password
 ```
 
-### Production Deployment
+Without a password, an upgrade fails with `mode password not configured`, so a vault without a password stays in `readonly` through the CLI.
+
+<Warning>
+  `migrate` is currently create-only: existing tables are not altered. Read [`chameleon migrate`](/cli/migrate) before relying on it.
+</Warning>
+
+## Passwords
+
+- The password is required to move to a **less** restrictive mode (`readonly` to `standard`, and so on). Moving to a more restrictive mode does not need one.
+- It is stored as a salted SHA-256 hash in `.chameleon/vault/mode_auth.json` (file mode `0600`). A single round of SHA-256 is fast to brute-force if the file leaks, so use a long, unique password.
+- For CI, set `CHAMELEON_MODE_PASSWORD` instead of typing it.
+- The default `.chameleon/.gitignore` does not ignore `vault/`. Add `.chameleon/vault/mode_auth.json` to your own `.gitignore` so the verifier is not committed.
+
+## Where the mode lives
+
+| File | Contents |
+|------|----------|
+| `.chameleon/vault/mode.json` | The current mode (source of truth) |
+| `.chameleon/vault/mode_auth.json` | Salt and hash of the password |
+| `.chameleon/vault/manifest.json` | A legacy copy of the mode, for compatibility |
+
+`mode.json` is not covered by the vault's hash verification. Editing it by hand changes the mode without a password and without an audit entry. That is why this is a safeguard and not a control.
+
+## Checking the mode
 
 ```bash
-# Production should ALWAYS be in readonly mode
-$ chameleon status
-Mode: 🔒 readonly (locked)
-
-# Schema changes are blocked
-$ chameleon migrate --apply
-❌ readonly mode: schema modifications blocked
-
-# Must explicitly upgrade (requires password)
-$ chameleon config set mode=standard
-🔐 Enter mode password: ****
-```
-
-### Emergency Recovery
-
-```bash
-# 1. Activate emergency mode
-chameleon config set mode=emergency
-🚨 WARNING: EMERGENCY MODE ACTIVATED
-
-# 2. Perform recovery operations
-# ...
-
-# 3. IMMEDIATELY return to readonly
-chameleon config set mode=readonly
-✅ Mode downgraded to readonly
-```
-
-## Security Model
-
-Integrity Modes are part of ChameleonDB's multi-layered security:
-
-1. **OS Permissions** - File access control
-2. **Hash Integrity** - SHA256 tamper detection
-3. **Integrity Modes** ← Runtime access control (this page)
-4. **Vault Enforcement** - No schema bypass
-5. **Audit Trail** - Complete forensics
-
-## Best Practices
-
-1. **Always set a mode password** - Even in development
-2. **Use readonly in production** - Default to most restrictive
-3. **Minimize privileged mode use** - Only when necessary
-4. **Never stay in emergency mode** - Return to readonly immediately
-5. **Review integrity.log regularly** - Monitor mode changes
-6. **Document mode changes** - Track why and when modes changed
-7. **Rotate passwords periodically** - Especially after personnel changes
-
-## Commands
-
-```bash
-# View current mode
 chameleon config get mode
-
-# View full status (includes mode)
 chameleon status
-
-# Set mode password
-chameleon config auth set-password
-
-# Upgrade mode (requires password)
-chameleon config set mode=standard
-chameleon config set mode=privileged
-chameleon config set mode=emergency
-
-# Downgrade mode (no password required)
-chameleon config set mode=readonly
-chameleon config set mode=standard
 ```
 
-## Comparison with Traditional Systems
+## What is recorded
 
-| Traditional DB | ChameleonDB Integrity Modes |
-|----------------|-----------------------------|
-| ❌ Implicit authority | ✅ Explicit ring-based modes |
-| ❌ No runtime enforcement | ✅ Enforced by engine |
-| ❌ Anyone with DB access can ALTER | ✅ Password-protected escalation |
-| ❌ No mode audit trail | ✅ All changes logged |
-| ❌ Manual governance | ✅ Built into platform |
+Mode changes and denied attempts are written to the journal and to `.chameleon/vault/integrity.log`:
 
-## Next Steps
+```
+2026-11-03T10:30:00Z [MODE] action=mode_updated mode=standard
+2026-11-03T10:31:12Z [MODE] action=mode_change_denied mode=standard reason=invalid_mode_password
+```
 
-- Learn about the [Schema Vault](/concepts/schema-vault) that Integrity Modes protect
-- Understand the [Schema Language](/concepts/schema-language)
-- Explore the [Architecture](/concepts/architecture)
+Both files are plain, append-by-convention logs. Nothing prevents someone with file access from editing them, so treat them as an operational record rather than as tamper-proof evidence.
+
+## Best practices
+
+1. Set a mode password as soon as the vault exists.
+2. Keep `readonly` as the resting state, and upgrade only for the migration.
+3. Keep `mode_auth.json` out of version control.
+4. In CI, pass the password through your secret store and `CHAMELEON_MODE_PASSWORD`.
+5. Enforce who may change schemas with your CI permissions and PostgreSQL roles; use modes as a second, local check.
+
+## Planned
+
+Making mode enforcement tamper-evident, and making `privileged` and `emergency` behave differently from `standard`, is on the roadmap. Until then, rely on the table above.
+
+## Next steps
+
+- [Schema Vault](/concepts/schema-vault) - Where the mode and versions are stored
+- [`chameleon config`](/cli/config) - Command reference
+- [Architecture](/concepts/architecture)

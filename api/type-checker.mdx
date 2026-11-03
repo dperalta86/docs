@@ -9,10 +9,10 @@ The type checker validates the parsed AST before runtime, catching errors like i
 
 ## Overview
 
-Validation is organized into three specialized modules:
+Validation is organized into specialized modules:
 
 1. **Relations** (`relations.rs`) - Entity references and foreign key consistency
-2. **Constraints** (`constraints.rs`) - Primary keys and annotation rules
+2. **Constraints** (`constraints.rs`) - Primary keys, annotation rules and default values
 3. **Orchestration** (`mod.rs`) - Pipeline coordination and error reporting
 
 ## Architecture
@@ -35,6 +35,8 @@ Type Check Pipeline
     └── Check annotations (constraints.rs)
         ├── @vector only on vector(N)?
         └── No annotations on primary/unique?
+    └── Check defaults (constraints.rs)
+        └── Does the default match the field type?
     ↓
 TypeCheckResult { errors: Vec<TypeCheckError> }
     ↓
@@ -58,6 +60,7 @@ pub fn type_check(schema: &Schema) -> TypeCheckResult {
     // 4. Check constraints
     errors.extend(constraints::check_primary_keys(schema));
     errors.extend(constraints::check_annotations(schema));
+    errors.extend(constraints::check_defaults(schema));
     
     TypeCheckResult { errors }
 }
@@ -65,8 +68,8 @@ pub fn type_check(schema: &Schema) -> TypeCheckResult {
 
 **Key characteristics:**
 - **Non-short-circuiting**: Collects all errors, not just the first
-- **Zero allocation** (where possible): Borrows schema, doesn't modify
-- **Deterministic**: Same schema always produces same errors in same order
+- **Read-only**: Borrows the schema and does not modify it
+- **Order of errors**: The same schema produces the same set of errors, but their order is not guaranteed yet, because entities and fields are kept in hash maps
 
 ## TypeCheckResult
 
@@ -261,7 +264,7 @@ pub fn check_primary_keys(schema: &Schema) -> Vec<TypeCheckError> {
 
 **Rules:**
 - Every entity must have **exactly one** primary key
-- Composite primary keys are **not supported** in v1.0
+- Composite primary keys are **not supported** today
 - Primary key must be a field (not a relation)
 
 ### Annotation Validation
@@ -380,6 +383,22 @@ pub enum TypeCheckError {
         constraint: String,  // "primary" or "unique"
         annotation: String,
     },
+
+    #[error("Field '{field}' in '{entity}' has invalid default '{default}' for type '{field_type}'")]
+    InvalidDefaultValue {
+        entity: String,
+        field: String,
+        field_type: String,
+        default: String,
+    },
+
+    #[error("Field '{field}' in '{entity}' uses unsupported default function '{function}' for type '{field_type}'")]
+    UnsupportedDefaultFunction {
+        entity: String,
+        field: String,
+        field_type: String,
+        function: String,
+    },
     
     #[error("Circular dependency detected: {cycle:?}")]
     CircularDependency {
@@ -406,20 +425,7 @@ pub enum TypeCheckError {
 - Structured fields for programmatic access (e.g., CI tooling)
 - Human-readable messages with context
 
-## Performance Characteristics
-
-| Operation | Time Complexity | Space Complexity | Notes |
-|-----------|----------------|------------------|-------|
-| Relations check | O(E × R × F) | O(1) | E=entities, R=relations/entity, F=fields |
-| Cycle detection | O(E + R) | O(E) | DFS graph traversal |
-| Primary keys | O(E × F) | O(1) | Linear scan per entity |
-| Annotations | O(E × F) | O(1) | Linear scan per entity |
-| **Total** | **O(E × F)** | **O(E)** | Dominated by field scans |
-
-**Benchmarks (typical schema: 20 entities, 10 fields each):**
-- Type check: ~5ms
-- Error report generation: ~0.5ms
-- Memory overhead: ~2KB (visited sets)
+Type-checking performance has not been benchmarked yet.
 
 ## Example Usage
 
@@ -496,20 +502,7 @@ match &result.errors[0] {
 
 Location: `chameleon-core/src/typechecker/mod.rs:98`
 
-**Test coverage:**
-- ✅ Valid simple schemas
-- ✅ Valid schemas with relations
-- ✅ Valid backend annotations
-- ✅ Unknown relation targets
-- ✅ Invalid foreign keys
-- ✅ Missing foreign keys (HasMany)
-- ✅ Missing primary keys
-- ✅ Multiple primary keys
-- ✅ Invalid vector annotations
-- ✅ Annotations on primary keys
-- ✅ Annotations on unique fields
-- ✅ Circular dependencies
-- ✅ Error report formatting
+**Test coverage includes:** valid schemas, relations, annotations, unknown relation targets, invalid foreign keys, missing foreign keys on HasMany, missing and multiple primary keys, invalid vector annotations, annotations on primary or unique fields, circular dependencies and error-report formatting.
 
 **Example test:**
 

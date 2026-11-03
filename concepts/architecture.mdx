@@ -1,351 +1,172 @@
 ---
 title: Architecture
-description: System architecture and design decisions behind ChameleonDB
+description: How ChameleonDB is built and where its guarantees come from
 ---
 
-ChameleonDB is a **schema-governed database platform** with explicit integrity guarantees. This page explains the architecture, components, and design decisions.
+ChameleonDB is a **schema-first governance layer for PostgreSQL**: you describe your data model in a `.cham` schema, and ChameleonDB validates it, records its versions, generates SQL for it and checks your queries against it. This page describes how the pieces fit together and what each one does today.
 
-## System Overview
+## System overview
 
 ![System Overview diagram](../diagrams/system_overview.png)
 
-ChameleonDB governs schemas at runtime through versioning, cryptographic integrity, and explicit operational modes.
-
-## Architecture Layers
-
-The system is organized into five distinct layers:
+## Layers
 
 ```
 ┌─────────────────────────────────────────────┐
-│  Application Layer                          │
-│  - Query Builder API                        │
-│  - Mutations (Insert/Update/Delete)         │
-│  - Debug Mode                               │
+│  Your application (Go)                      │
+│  - Query builder, mutations, debug mode     │
 └─────────────────────────────────────────────┘
                     ↓
 ┌─────────────────────────────────────────────┐
-│  Security Layer                             │
-│  - Integrity Modes (readonly/standard/...)  │
-│  - Password-protected upgrades              │
-│  - Mode enforcement                         │
+│  Go runtime (chameleon)                     │
+│  - Engine: loads the merged schema          │
+│  - SQL execution through pgx                │
+│  - Error mapping, IdentityMap               │
 └─────────────────────────────────────────────┘
                     ↓
 ┌─────────────────────────────────────────────┐
-│  Schema Vault                               │
-│  - Versioned schemas (v001, v002, ...)      │
-│  - SHA256 integrity verification           │
-│  - Immutable snapshots                      │
-│  - Append-only audit log                    │
+│  Rust core (chameleon-core), through FFI    │
+│  - Parser, type checker                     │
+│  - SQL, mutation and migration generators   │
 └─────────────────────────────────────────────┘
                     ↓
 ┌─────────────────────────────────────────────┐
-│  Runtime Layer                              │
-│  - Query Executor                           │
-│  - Connection Pool (pgx)                    │
-│  - Error Mapping                            │
-│  - IdentityMap (deduplication)              │
+│  PostgreSQL                                 │
 └─────────────────────────────────────────────┘
-                    ↓
-┌─────────────────────────────────────────────┐
-│  Database Backend                           │
-│  - PostgreSQL (v1.0)                        │
-│  - MySQL (planned v1.2)                     │
-│  - DuckDB (planned v1.5)                    │
-└─────────────────────────────────────────────┘
+
+Alongside, driven by the CLI:
+  Schema Vault (.chameleon/vault/)  - versions, hashes, log, mode
 ```
 
 <Info>
-Each layer has a specific responsibility. Security and governance are built into the core, not bolted on.
+  PostgreSQL is the only supported database. Other backends are not implemented.
 </Info>
 
-## Core Components
+## Components
 
-### 1. Rust Core (`chameleon-core`)
+### Rust core (`chameleon-core`)
 
-**Parser**  
-Transforms `.cham` source into an AST using LALRPOP grammar. Handles entities, fields, relations, type modifiers, default values, and backend annotations.
+- **Parser** - Turns `.cham` source into an AST with a LALRPOP grammar: entities, fields, relations, modifiers, defaults and annotations.
+- **Type checker** - Validates the AST: primary keys, relation targets, foreign keys, annotations, defaults and circular dependencies.
+- **SQL generation** - Builds parameterized queries. Values are bound as `$1..$n` and identifiers are validated against the schema and quoted.
+- **Mutation generation** - Insert, update and delete statements built the same way.
+- **Migration generation** - A create-only DDL script: one `CREATE TABLE IF NOT EXISTS` per entity, in dependency order. It never drops or alters.
 
-**Type Checker**  
-Validates the AST before runtime. Organized in three modules:
-- `relations.rs` - Entity references and foreign key consistency
-- `constraints.rs` - Primary keys and annotation rules  
-- `mod.rs` - Pipeline orchestration and error reporting
+### Go runtime (`chameleon`)
 
-**Query Optimizer** (Planned v1.5)  
-Rule-based optimization for query execution plans. Deterministic, no ML in v1.x.
+- **Engine** - The entry point for applications. `NewEngine()` requires an initialized vault, verifies its integrity and loads the merged schema from `.chameleon/state/schema.merged.cham` (or `schema.merged_output` in `.chameleon.yml`).
+- **Query executor** - Sends the generated SQL and parameters to PostgreSQL through pgx.
+- **Error mapping** - Maps PostgreSQL errors to ChameleonDB errors.
+- **IdentityMap** - Deduplicates parent objects in memory when you use `.Include()`.
+- **CLI** - `init`, `migrate`, `validate`, `check`, `verify`, `status`, `journal`, `config`, `introspect`, `query`, `version`, `uninstall`, plus local `dashboard` and `playground-sql` servers.
 
-**Status:** ✅ Complete
+<Warning>
+  `NewEngineForCLI()` is exported and skips the vault checks. It exists for the CLI and tests. Applications should use `NewEngine()`. The vault is a consistency check, not a barrier that prevents a Go program from loading a different schema.
+</Warning>
 
-### 2. Schema Vault
+### Schema Vault
 
-**Purpose:** Immutable, versioned schema storage with integrity guarantees.
+Versioned snapshots of your merged schema, SHA-256 hashes per version, an operations log and the integrity mode. See [Schema Vault](/concepts/schema-vault).
 
-See the [Schema Vault](/concepts/schema-vault) page for complete details.
-
-**Structure:**
 ```
 .chameleon/vault/
-├── manifest.json       # Current version + history
-├── integrity.log       # Append-only audit trail
+├── manifest.json
+├── mode.json
+├── mode_auth.json
+├── integrity.log
 ├── versions/
-│   ├── v001.json      # Immutable schema snapshot
-│   └── v002.json
 └── hashes/
-    ├── v001.hash      # SHA256 verification
-    └── v002.hash
 ```
 
-**Features:**
-- ✅ Automatic version registration on every migration
-- ✅ SHA256 hash verification before every operation
-- ✅ Tamper detection (if hash mismatch → abort)
-- ✅ Lineage tracking (parent versions)
-- ✅ Complete audit trail (who, what, when)
+### Integrity modes
 
-**Status:** ✅ Complete (v1.0)
+A local gate on `migrate` and `introspect`, with password-protected upgrades. See [Integrity Modes](/concepts/integrity-modes).
 
-### 3. Integrity Modes
+| Mode | Enforced today |
+|------|----------------|
+| `readonly` (default) | `migrate` and `introspect` blocked once a version exists |
+| `standard` | Allowed |
+| `privileged` | Allowed; also allows changing `schema-paths` |
+| `emergency` | As `privileged`, with an extra confirmation |
 
-**Purpose:** Ring-based access control for schema governance.
+### FFI boundary
 
-See the [Integrity Modes](/concepts/integrity-modes) page for complete details.
+The Rust core is compiled as a library and called from Go through a C ABI (cgo). Schemas and results cross the boundary as JSON strings; strings allocated by Rust are released with `chameleon_free_string`.
 
-| Mode | Ring | Use Case | Schema Changes |
-|------|------|----------|----------------|
-| **readonly** | R3 | Production (default) | ❌ Blocked |
-| **standard** | R2 | Development teams | ✅ Controlled |
-| **privileged** | R1 | DBAs | ✅ Direct (logged) |
-| **emergency** | R0 | Incident recovery | ✅ No checks (audited) |
+On Windows the release archive includes `chameleon.dll`, which must stay next to `chameleon.exe`.
 
-**Mode Enforcement:**
-- Application code checks mode before operations
-- Mode upgrades require password authentication
-- Downgrades don't require password
-- All mode changes logged
-
-**Status:** ✅ Complete (v1.0)
-
-### 4. Go Runtime (`chameleon`)
-
-**Engine**  
-Entry point for Go applications. Loads schemas from vault, verifies integrity, enforces modes, and exposes public API.
-
-**Key change in v1.0:**
-```go
-// ❌ OLD (insecure - bypasses vault)
-eng := engine.NewEngine()
-eng.LoadSchemaFromFile("any.cham")
-
-// ✅ NEW (secure - vault-enforced)
-eng, err := engine.NewEngine()
-// ↑ Loads ONLY from .chameleon/state/schema.merged.cham
-// ↑ Verifies integrity automatically
-// ↑ Enforces mode restrictions
-```
-
-**Query Executor**  
-Translates validated queries into backend-specific SQL. Handles field projection (`.Select()`), eager loading (`.Include()`), and filters.
-
-**Connection Pool**  
-pgx-based PostgreSQL connection management with automatic reconnection and health checks.
-
-**IdentityMap** (NEW in v1.0)  
-Automatic object deduplication in memory. When querying with `.Include()`, parent objects are deduplicated to save memory.
-
-Example:
-```go
-// User with 100 posts
-result := db.Query("User").
-    Include("posts").
-    Execute(ctx)
-
-// Without IdentityMap: User duplicated 100 times (wasteful)
-// With IdentityMap: User appears only once (efficient)
-```
-
-**Error Mapping**  
-Comprehensive PostgreSQL error → ChameleonDB error mapping with clear messages and suggestions.
-
-**Status:** ✅ Complete (v1.0)
-
-### 5. CLI Tools
-
-**Commands:**
-
-| Command | Purpose | Status |
-|---------|---------|--------|
-| `init` | Initialize project + vault | ✅ v1.0 |
-| `migrate` | Generate & apply migrations | ✅ v1.0 |
-| `validate` | Validate schema syntax | ✅ v1.0 |
-| `verify` | Verify vault integrity | ✅ v1.0 |
-| `status` | Show vault + mode status | ✅ v1.0 |
-| `journal schema` | View version history | ✅ v1.0 |
-| `config` | Manage modes & settings | ✅ v1.0 |
-| `introspect` | DB → Schema generation | ✅ v1.0 |
-
-**Status:** ✅ Complete (v1.0)
-
-### 6. FFI Boundary
-
-Communication between Rust core and Go runtime via C ABI.
-
-**How it works:**
-- Schemas serialized to JSON in Rust
-- Passed to Go via C strings
-- Go deserializes and uses
-- Memory managed explicitly (Rust allocates, Go frees)
-
-**Overhead:** ~100ns per call (negligible for DB operations)
-
-**Status:** ✅ Complete
-
-## Compilation & Validation Flow
+## Compilation and validation flow
 
 ![Compilation Flow](../diagrams/Compilation_Flow.png)
 
 ```
 .cham files
     ↓
-Parser (LALRPOP)
+Merge (schema.paths) and validate
     ↓
-AST
+Parser (LALRPOP) → AST
     ↓
-Type Checker
-  - Relations validation
-  - Constraints validation
-  - Cycle detection
+Type checker
     ↓
-Validated Schema
+JSON across the FFI boundary
     ↓
-JSON Serialization
+Go runtime
     ↓
-FFI Boundary (C ABI)
+Vault: register version (SHA-256, snapshot, manifest, log)
     ↓
-Go Runtime
+Migration generation (create-only DDL)
     ↓
-Schema Vault Registration
-  - Compute SHA256
-  - Save snapshot
-  - Update manifest
-    ↓
-Migration Generation
-    ↓
-SQL Execution (PostgreSQL)
+Execution on PostgreSQL
 ```
 
-<Note>
-Validation happens at compile time. Invalid schemas never reach the database.
-</Note>
-
-## Execution Flow
-
-The complete flow from migration to database:
+## What `migrate --apply` does
 
 ```
-1. User: chameleon migrate --apply
-         ↓
-2. Vault: Check integrity (verify all hashes)
-         ↓
-3. Mode:  Check if changes allowed (readonly blocks)
-         ↓
-4. Detect: Compare schema hash with current version
-         ↓
-5. Register: Create v002 snapshot + hash
-         ↓
-6. Execute: Apply SQL migration
-         ↓
-7. Log: Record in integrity.log + journal
+1. Load config; create the vault if missing (mode readonly)
+2. Verify every registered version's hash
+3. If a version exists and the mode is readonly: stop
+4. Merge and validate the schema files
+5. Compare with the current version by hash
+6. Generate the create-only SQL
+7. Register the new version in the vault
+8. Execute the SQL on PostgreSQL
+9. Record the result in the journal and integrity.log
 ```
 
-## Security Model
+## What the guarantees mean
 
-See SECURITY.md in the source for complete details.
+These are the properties ChameleonDB aims to provide, and their limits.
 
-**Layers:**
-1. **OS Permissions** - File access control (0700)
-2. **Hash Integrity** - SHA256 tamper detection
-3. **Integrity Modes** - Runtime access control
-4. **Vault Enforcement** - No schema bypass
-5. **Audit Trail** - Complete forensics
+| Property | Where it comes from | Limit |
+|----------|--------------------|-------|
+| Invalid schemas are rejected before SQL is generated | Parser and type checker | Checks the schema, not your live database |
+| Queries are checked against the schema | Rust core | Only for queries built with the builder |
+| Values never appear in SQL text | Bound parameters | Applies to queries and mutations generated by the core; table and column names are validated and quoted |
+| Changes to recorded schema history are detected | SHA-256 per version | Detection, not prevention; hashes live next to the files they cover |
+| Schema-changing commands can be locked | Integrity mode `readonly` | A local safeguard; the mode file is plain and editable |
+| Migrations never drop data | Create-only generator | Existing tables are also not altered |
 
-<Warning>
-All security layers work together. Bypassing one layer doesn't compromise the system.
-</Warning>
+Security reports and the project's security model are described in `SECURITY.md` in the repository. The query-injection issue fixed in v1.1.0-alpha is documented in its published GitHub security advisory.
 
-## Design Decisions
+## Design decisions
 
-### Why Rust for Core?
+### Why Rust for the core?
 
-- True lambdas and closures (essential for query API)
-- Extreme type safety (catch errors at compile time)
-- Operator overloading (natural query syntax)
-- Excellent performance on parser hot paths
+A strong type system for the parser, type checker and SQL generators, and no runtime overhead on the parsing path.
 
-### Why Go for Runtime?
+### Why Go for the runtime?
 
-- Simple concurrency (goroutines for connection pooling)
-- Excellent PostgreSQL driver (pgx)
-- Single-binary deployment
-- Great debugging tools
+Simple deployment, a mature PostgreSQL driver (pgx) and good fit for the CLI and application integration.
 
 ### Why FFI?
 
-- Each language does what it does best
-- Minimal overhead (~100ns)
-- Future-proof (easy to add Node, Python, Java bindings)
+Each language does the part it is best at, and the core can be reused by other bindings later. The cost is a build that needs both toolchains and a native library next to the binary.
 
-### Why Schema Vault?
+### Why a vault?
 
-- Treats schemas as first-class artifacts
-- Immutability prevents silent drift
-- Cryptographic integrity (SHA256)
-- Complete audit trail for compliance
+To treat the schema as a versioned artifact with a recorded history, instead of a set of migration scripts with no relation to each other.
 
-### Why Integrity Modes?
-
-- Explicit governance (not just config)
-- Runtime enforcement (not optional)
-- Password-protected escalation
-- Compliance-ready out of the box
-
-## Performance Targets (v1.0)
-
-| Operation | Target | Notes |
-|-----------|--------|-------|
-| Schema parse | < 10ms | One-time, cold start |
-| Type check | < 5ms | Per schema validation |
-| FFI call | < 100ns | Per boundary crossing |
-| Hash verification | < 1ms | SHA256 computation |
-| Query compilation | < 1ms | Per query |
-| Query execution | DB-bound | Optimized SQL generation |
-
-<Info>
-Performance overhead from governance is negligible compared to database I/O.
-</Info>
-
-## Component Status
-
-| Component | Status | Version | Notes |
-|-----------|--------|---------|-------|
-| Parser | ✅ Complete | v1.0 | LALRPOP, all types |
-| Type Checker | ✅ Complete | v1.0 | Relations, constraints, cycles |
-| **Schema Vault** | ✅ Complete | v1.0 | Versioning, hashing, audit |
-| **Integrity Modes** | ✅ Complete | v1.0 | 4 modes, password-protected |
-| FFI Layer | ✅ Complete | v1.0 | C ABI bridge |
-| Query Builder | ✅ Complete | v1.0 | Filter, Include, Select |
-| Mutations | ✅ Complete | v1.0 | Insert, Update, Delete |
-| **IdentityMap** | ✅ Complete | v1.0 | Object deduplication |
-| Connection Pool | ✅ Complete | v1.0 | pgx-based |
-| Error Mapping | ✅ Complete | v1.0 | Comprehensive |
-| Migration Gen | ✅ Complete | v1.0 | PostgreSQL DDL |
-| **Introspection** | ✅ Complete | v1.0 | DB → Schema |
-| Debug Mode | ✅ Complete | v1.0 | SQL visibility |
-| CLI Tools | ✅ Complete | v1.0 | 8 commands |
-| Backend Registry | ⏳ Planned | v2.0 | Multi-backend routing |
-| Code Generator | ⏳ Planned | v1.1+ | Boilerplate generation |
-| Query Optimizer | ⏳ Planned | v1.5+ | Rule-based optimization |
-
-## Project Structure
+## Project structure
 
 ```
 chameleondb/
@@ -354,73 +175,41 @@ chameleondb/
 │   │   ├── ast/             # Schema structures
 │   │   ├── parser/          # LALRPOP grammar
 │   │   ├── typechecker/     # Validation
+│   │   ├── sql/             # Query SQL generation
+│   │   ├── mutation/        # Mutation SQL generation
+│   │   ├── migration/       # DDL generation
 │   │   └── ffi/             # C ABI bridge
-│   └── tests/               # Integration tests
-│
-├── chameleon/               # Go runtime
-│   ├── cmd/chameleon/       # CLI tool
+│   └── tests/
+├── chameleon/               # Go runtime and CLI
+│   ├── cmd/chameleon/       # CLI
 │   ├── pkg/
 │   │   ├── engine/          # Public API
-│   │   └── vault/           # Schema Vault (NEW)
+│   │   └── vault/           # Schema Vault
 │   └── internal/
-│       ├── admin/           # Journal, state tracking
+│       ├── admin/           # Journal and state tracking
 │       └── schema/          # Schema merge
-│
-├── examples/                # Example apps
-│   └── todo-app/            # Complete CRUD example
-│
-└── docs/                    # Documentation
-    ├── architecture.md      # System design
-    ├── SECURITY.md          # Security model
-    ├── QUICK_START.md       # 5 min tutorial
-    └── ...
+├── examples/
+└── docs/
 ```
 
-## Testing
+## Status
 
-**Test coverage:**
-- Rust: 96 tests ✅
-- Go: 188 tests ✅
-- Integration: 30 tests ✅
-- **Total: 314 tests passing**
+| Component | Status |
+|-----------|--------|
+| Parser, type checker | Working |
+| Query and mutation generation (parameterized) | Working |
+| Create-only migrations | Working; existing tables are not altered |
+| Schema Vault | Working; detects inconsistencies, does not prevent tampering |
+| Integrity modes | Working as a local safeguard; only `readonly` changes behavior |
+| Introspection | Working; produces a draft schema |
+| Query builder, mutations, IdentityMap | Working |
+| Applying changes to existing tables (schema diff) | Planned |
+| Other databases | Not planned in the current alpha |
 
-**Test categories:**
-- Parser tests (syntax, error handling)
-- Type checker tests (relations, cycles, constraints)
-- Vault tests (versioning, integrity, modes)
-- Query tests (filters, includes, selects)
-- Mutation tests (CRUD operations)
-- Error mapping tests (PostgreSQL → ChameleonDB)
+ChameleonDB is alpha software. The [roadmap](/introduction) describes what is next, without dates.
 
-## Future Architecture (v2.0+)
+## Next steps
 
-![Future Architecture](../diagrams/Future%20Architecture.png)
-
-**Planned features (not in v1.x):**
-- Multi-backend routing (PostgreSQL + DuckDB + Redis)
-- ML-based query optimization
-- Visual schema editor
-- Distributed vault (multi-node)
-- Advanced observability
-
-<Note>
-v2.0 features are not part of the open-source v1.x releases.
-</Note>
-
-## Summary
-
-ChameleonDB v1.0 provides:
-- ✅ **Schema Vault** - Versioned, hash-verified schemas
-- ✅ **Integrity Modes** - Explicit runtime governance
-- ✅ **Type-safe queries** - Validated before execution
-- ✅ **Complete audit trail** - Who, what, when
-- ✅ **Zero-config security** - Fail-safe defaults
-- ✅ **Production-ready** - 314 tests passing
-
-**Philosophy:** Explicit over implicit, safety over convenience, governance over magic.
-
-## Next Steps
-
-- Learn about the [Schema Vault](/concepts/schema-vault)
-- Understand [Integrity Modes](/concepts/integrity-modes)
-- Explore the [Schema Language](/concepts/schema-language)
+- [Schema Vault](/concepts/schema-vault)
+- [Integrity Modes](/concepts/integrity-modes)
+- [Schema Language](/concepts/schema-language)

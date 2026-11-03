@@ -1,13 +1,15 @@
 ---
 title: 'Query Builder'
-description: 'Build and execute type-safe queries with the ChameleonDB Go SDK'
+description: 'Build and execute queries with the ChameleonDB Go SDK'
 ---
 
 ## Overview
 
-The Query Builder provides a chainable API for constructing queries with filtering, relation loading, sorting, pagination, and field selection.
+The Query Builder provides a chainable API for constructing queries with filtering, relation loading, sorting, pagination and field selection.
 
-## Basic Usage
+Values you pass to `Filter()` are sent to PostgreSQL as bound parameters; they are never written into the SQL text. Field, relation and ordering names are validated against the schema and quoted before they reach the SQL.
+
+## Basic usage
 
 ### Query()
 
@@ -32,7 +34,7 @@ for _, user := range result.Rows {
 
 ### Execute()
 
-Executes the query and returns results.
+Executes the query and returns the results.
 
 ```go
 func (qb *QueryBuilder) Execute(ctx context.Context) (*QueryResult, error)
@@ -57,8 +59,31 @@ func (qb *QueryBuilder) Execute(ctx context.Context) (*QueryResult, error)
 </ResponseField>
 
 <ResponseField name="Relations" type="map[string][]Row">
-  Eager-loaded relations (relation name → rows)
+  Eager-loaded relations (relation name to rows)
 </ResponseField>
+
+### ToSQL()
+
+Generates the SQL and its parameters without executing anything.
+
+```go
+func (qb *QueryBuilder) ToSQL() (*GeneratedSQL, error)
+```
+
+```go
+generated, err := eng.Query("User").
+    Select("id", "name").
+    Filter("email", "eq", "ana@mail.com").
+    ToSQL()
+if err != nil {
+    log.Fatal(err)
+}
+
+fmt.Println(generated.MainQuery)  // SQL text with $1, $2, ... placeholders
+fmt.Println(generated.MainParams) // the values, kept separate from the SQL
+```
+
+`GeneratedSQL` has `MainQuery`, `EagerQueries`, `MainParams` and `EagerParams`.
 
 ## Filtering
 
@@ -71,20 +96,20 @@ func (qb *QueryBuilder) Filter(field string, op string, value interface{}) *Quer
 ```
 
 <ParamField path="field" type="string" required>
-  Field name or relation path (e.g., "email", "posts.published")
+  A field of the entity (for example `"email"`), or a field of a direct relation (for example `"posts.published"`). Paths deeper than `relation.field` are rejected.
 </ParamField>
 
 <ParamField path="op" type="string" required>
-  Filter operator: `"eq"`, `"neq"`, `"gt"`, `"gte"`, `"lt"`, `"lte"`, `"like"`, `"in"`
+  Filter operator: `"eq"`, `"neq"`, `"gt"`, `"gte"`, `"lt"`, `"lte"`, `"like"`
 </ParamField>
 
 <ParamField path="value" type="interface{}" required>
-  Value to compare against (string, int, float64, bool)
+  Value to compare against: string, integer, `float64`, `bool` or `nil`
 </ParamField>
 
 **Supported operators:**
 
-| Operator | SQL Equivalent | Description |
+| Operator | SQL equivalent | Description |
 |----------|----------------|-------------|
 | `"eq"` | `=` | Equal to |
 | `"neq"` | `!=` | Not equal to |
@@ -92,8 +117,33 @@ func (qb *QueryBuilder) Filter(field string, op string, value interface{}) *Quer
 | `"gte"` | `>=` | Greater than or equal |
 | `"lt"` | `<` | Less than |
 | `"lte"` | `<=` | Less than or equal |
-| `"like"` | `LIKE` | Pattern matching (use `%` wildcards) |
-| `"in"` | `IN` | Value in list |
+| `"like"` | `LIKE` | Contains (strings only, see below) |
+
+<Warning>
+  The `"in"` operator is not supported and is rejected with an error. It will be reintroduced with bound parameters.
+</Warning>
+
+**About `like`:**
+
+`like` means "contains". ChameleonDB wraps your value in `%...%` itself and escapes any `%`, `_` or `\` that appears in the value, so they match literally. Do not add wildcards yourself.
+
+```go
+// Matches names that contain "Garcia"
+eng.Query("User").
+    Filter("name", "like", "Garcia").
+    Execute(ctx)
+
+// Matches names that contain a literal "100%"
+eng.Query("User").
+    Filter("name", "like", "100%").
+    Execute(ctx)
+```
+
+`like` accepts string values only.
+
+**Value types:**
+
+Strings, integers, `float64`, `bool` and `nil` are supported. Other types, such as `time.Time`, are not supported by `Filter()` today (this is a known limitation). Floating-point values are bound as `numeric`, so comparing them with an integer column keeps the exact value.
 
 **Examples:**
 
@@ -101,11 +151,6 @@ func (qb *QueryBuilder) Filter(field string, op string, value interface{}) *Quer
 // Exact match
 eng.Query("User").
     Filter("email", "eq", "ana@mail.com").
-    Execute(ctx)
-
-// Pattern matching
-eng.Query("User").
-    Filter("name", "like", "%Garcia%").
     Execute(ctx)
 
 // Numeric comparison
@@ -118,10 +163,19 @@ eng.Query("Post").
     Filter("published", "eq", true).
     Filter("views", "gt", 1000).
     Execute(ctx)
-// SQL: WHERE published = true AND views > 1000
+// WHERE "published" = $1 AND "views" > $2
 ```
 
-## Field Selection
+Unknown fields are rejected before any SQL runs:
+
+```go
+_, err := eng.Query("Post").
+    Filter("no_such_field", "eq", 1).
+    Execute(ctx)
+// err mentions: Unknown field 'no_such_field' in entity 'Post'
+```
+
+## Field selection
 
 ### Select()
 
@@ -132,24 +186,22 @@ func (qb *QueryBuilder) Select(fields ...string) *QueryBuilder
 ```
 
 <ParamField path="fields" type="...string" required>
-  Field names to select (variadic)
+  Field names to select (variadic). Each name is validated against the schema.
 </ParamField>
 
 **Behavior:**
-- If not called, defaults to `SELECT *` (all fields)
-- Reduces data transfer and improves performance
+- If not called, all fields are selected
 - Selected fields are available in `result.Rows`
 
 **Examples:**
 
 ```go
-// Select specific fields
 users, _ := eng.Query("User").
     Select("id", "name", "email").
     Execute(ctx)
 
 for _, user := range users.Rows {
-    // Only id, name, email are available
+    // Only id, name and email are available
     fmt.Printf("%s <%s>\n", user["name"], user["email"])
 }
 
@@ -158,28 +210,28 @@ eng.Query("Post").
     Select("id", "title", "created_at").
     Filter("published", "eq", true).
     Execute(ctx)
-// SQL: SELECT id, title, created_at FROM posts WHERE published = true
+// SELECT "id", "title", "created_at" FROM "posts" WHERE "published" = $1
 ```
 
-## Eager Loading
+## Eager loading
 
 ### Include()
 
-Eager loads related entities (prevents N+1 queries).
+Loads related entities with one extra query per relation, instead of one query per parent row.
 
 ```go
 func (qb *QueryBuilder) Include(path string) *QueryBuilder
 ```
 
 <ParamField path="path" type="string" required>
-  Relation name or nested path (e.g., "posts", "posts.comments")
+  Relation name or nested path (for example `"posts"` or `"posts.comments"`). Each segment is validated against the schema.
 </ParamField>
 
 **Behavior:**
-- Loads relations in separate queries
-- Results available in `result.Relations["relation_name"]`
+- Relations are loaded in separate queries that filter on the parent ids (`WHERE "author_id" = ANY($1)`)
+- Results are available in `result.Relations["relation_name"]`
 - Supports nested includes with dot notation
-- Uses IdentityMap for automatic deduplication
+- Rows are deduplicated by primary key using an identity map
 
 **Examples:**
 
@@ -191,13 +243,12 @@ result, _ := eng.Query("User").
 
 for _, user := range result.Rows {
     fmt.Printf("User: %s\n", user["name"])
-    
-    // Access related posts
-    if posts, ok := result.Relations["posts"]; ok {
-        fmt.Printf("  Posts: %d\n", len(posts))
-        for _, post := range posts {
-            fmt.Printf("  - %s\n", post["title"])
-        }
+}
+
+if posts, ok := result.Relations["posts"]; ok {
+    fmt.Printf("Loaded %d posts\n", len(posts))
+    for _, post := range posts {
+        fmt.Printf("  - %s\n", post["title"])
     }
 }
 
@@ -207,12 +258,15 @@ eng.Query("User").
     Include("comments").
     Execute(ctx)
 
-// Nested relations
+// Nested relations: users, their posts, and comments on those posts
 eng.Query("User").
     Include("posts.comments").
     Execute(ctx)
-// Loads users, their posts, and comments on those posts
 ```
+
+<Note>
+  `result.Relations` holds the related rows of the whole result set for each relation. It is not grouped per parent row.
+</Note>
 
 ## Sorting
 
@@ -225,7 +279,7 @@ func (qb *QueryBuilder) OrderBy(field string, direction string) *QueryBuilder
 ```
 
 <ParamField path="field" type="string" required>
-  Field name to sort by
+  Field name to sort by (validated against the schema)
 </ParamField>
 
 <ParamField path="direction" type="string" required>
@@ -235,12 +289,12 @@ func (qb *QueryBuilder) OrderBy(field string, direction string) *QueryBuilder
 **Examples:**
 
 ```go
-// Sort ascending
+// Ascending
 eng.Query("User").
     OrderBy("name", "asc").
     Execute(ctx)
 
-// Sort descending
+// Descending
 eng.Query("Post").
     OrderBy("created_at", "desc").
     Execute(ctx)
@@ -250,7 +304,7 @@ eng.Query("User").
     OrderBy("last_name", "asc").
     OrderBy("first_name", "asc").
     Execute(ctx)
-// SQL: ORDER BY last_name ASC, first_name ASC
+// ORDER BY "last_name" ASC, "first_name" ASC
 ```
 
 ## Pagination
@@ -296,7 +350,7 @@ eng.Query("User").
 // Pagination helper
 func getPage(eng *engine.Engine, page, pageSize int) (*engine.QueryResult, error) {
     offset := (page - 1) * pageSize
-    
+
     return eng.Query("User").
         OrderBy("created_at", "desc").
         Limit(uint64(pageSize)).
@@ -305,36 +359,43 @@ func getPage(eng *engine.Engine, page, pageSize int) (*engine.QueryResult, error
 }
 ```
 
-## Debug Mode
+## Debug mode
 
 ### Debug()
 
-Enables SQL debug output for this query.
+Prints the generated SQL and its parameters for this query.
 
 ```go
 func (qb *QueryBuilder) Debug() *QueryBuilder
 ```
 
 **Output:**
-- Generated SQL query
-- Does not show execution time or row counts (use `DebugTrace()` for that)
+- The SQL text, with `$1`, `$2`, ... placeholders
+- The parameter values, listed separately
+- No timing or row counts (use `DebugTrace()` for those)
 
 **Example:**
 
 ```go
 result, _ := eng.Query("User").
-    Filter("email", "like", "%@example.com").
+    Select("id", "name", "email").
+    Filter("email", "like", "@example.com").
     Debug().
     Execute(ctx)
 
 // Output:
 // [SQL]
-// SELECT * FROM users WHERE email LIKE '%@example.com'
+// SELECT "id", "name", "email"
+// FROM "users"
+// WHERE "email" LIKE $1 ESCAPE '\'
+//
+// [PARAMS]
+// $1 = String("%@example.com%")
 ```
 
 ### DebugTrace()
 
-Enables full trace output (SQL + timing + row counts).
+Prints the SQL plus timing and row counts.
 
 ```go
 func (qb *QueryBuilder) DebugTrace() *QueryBuilder
@@ -348,20 +409,24 @@ eng.Query("User").
     DebugTrace().
     Execute(ctx)
 
-// Output:
+// Output (the SQL and the numbers depend on your query and data):
 // ┌─────────────────────────────────────
 // │ Query Trace
 // ├─────────────────────────────────────
 // │ SQL:
-// │   SELECT id, name FROM users
-// │ Duration: 2.3ms
-// │ Rows: 5
+// │   SELECT ... FROM "users"
+// │ Duration: <duration>
+// │ Rows: <row count>
 // └─────────────────────────────────────
 ```
 
-## Advanced Usage
+<Warning>
+  Debug output includes parameter values. Do not enable it where logs can reach people who should not see that data.
+</Warning>
 
-### Combining All Features
+## Advanced usage
+
+### Combining features
 
 ```go
 result, err := eng.Query("Post").
@@ -380,26 +445,19 @@ if err != nil {
     log.Fatal(err)
 }
 
-// Process results
 for _, post := range result.Rows {
-    fmt.Printf("Post: %s (views: %d)\n", 
-        post["title"], post["views"])
-    
-    // Access author
-    if authors, ok := result.Relations["author"]; ok {
-        if len(authors) > 0 {
-            fmt.Printf("  Author: %s\n", authors[0]["name"])
-        }
-    }
-    
-    // Access comments
-    if comments, ok := result.Relations["comments"]; ok {
-        fmt.Printf("  Comments: %d\n", len(comments))
-    }
+    fmt.Printf("Post: %s\n", post["title"])
+}
+
+if authors, ok := result.Relations["author"]; ok {
+    fmt.Printf("Authors loaded: %d\n", len(authors))
+}
+if comments, ok := result.Relations["comments"]; ok {
+    fmt.Printf("Comments loaded: %d\n", len(comments))
 }
 ```
 
-### Working with Results
+### Working with results
 
 ```go
 result, _ := eng.Query("User").Execute(ctx)
@@ -415,22 +473,17 @@ fmt.Printf("Found %d users\n", result.Count())
 
 // Iterate rows
 for i, user := range result.Rows {
-    // Access fields
-    id := user["id"]
-    name := user["name"]
-    email := user["email"]
-    
-    fmt.Printf("%d. %s <%s> (id: %v)\n", i+1, name, email, id)
+    fmt.Printf("%d. %s <%s> (id: %v)\n", i+1, user["name"], user["email"], user["id"])
 }
 
-// Type-safe field access (Row helpers)
+// Row helpers
 firstUser := result.Rows[0]
-name := firstUser.String("name")      // Returns "" if not found
-age := firstUser.Int("age")            // Returns 0 if not found
-value := firstUser.Get("created_at")   // Returns interface{}
+name := firstUser.String("name")     // "" if not found
+age := firstUser.Int("age")          // 0 if not found
+value := firstUser.Get("created_at") // interface{}
 ```
 
-## Query Result Reference
+## Query result reference
 
 ### QueryResult
 
@@ -472,7 +525,7 @@ type Row map[string]interface{}
   Returns the int64 value of a field (or 0 if not found)
 </ResponseField>
 
-## Complete Example
+## Complete example
 
 ```go
 package main
@@ -481,48 +534,52 @@ import (
     "context"
     "fmt"
     "log"
-    
+    "os"
+
     "github.com/chameleon-db/chameleondb/chameleon/pkg/engine"
 )
 
 func main() {
     ctx := context.Background()
-    
-    eng, _ := engine.NewEngine()
-    defer eng.Close()
-    
-    // ... connect to database ...
-    
-    // Complex query with all features
-    result, err := eng.Query("User").
-        Select("id", "name", "email", "created_at").
-        Filter("status", "eq", "active").
-        Filter("created_at", "gte", "2024-01-01").
-        Include("posts").
-        OrderBy("created_at", "desc").
-        Limit(50).
-        Debug().
-        Execute(ctx)
-    
+
+    eng, err := engine.NewEngine()
     if err != nil {
         log.Fatal(err)
     }
-    
-    // Process results
-    fmt.Printf("Active users: %d\n\n", result.Count())
-    
+    defer eng.Close()
+
+    config, err := engine.ParseConnectionString(os.Getenv("DATABASE_URL"))
+    if err != nil {
+        log.Fatal(err)
+    }
+    if err := eng.Connect(ctx, config); err != nil {
+        log.Fatal(err)
+    }
+
+    result, err := eng.Query("User").
+        Select("id", "name", "email", "created_at").
+        Filter("status", "eq", "active").
+        Include("posts").
+        OrderBy("created_at", "desc").
+        Limit(50).
+        Execute(ctx)
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    fmt.Printf("Users: %d\n\n", result.Count())
+
     for _, user := range result.Rows {
-        fmt.Printf("User: %s <%s>\n", 
-            user["name"], user["email"])
-        
-        if posts, ok := result.Relations["posts"]; ok {
-            fmt.Printf("  Posts: %d\n", len(posts))
-        }
+        fmt.Printf("User: %s <%s>\n", user["name"], user["email"])
+    }
+
+    if posts, ok := result.Relations["posts"]; ok {
+        fmt.Printf("Posts loaded: %d\n", len(posts))
     }
 }
 ```
 
-## See Also
+## See also
 
 - [Engine](/api/engine) - Initialize and configure the engine
 - [Mutations](/api/mutations) - Insert, update, and delete data

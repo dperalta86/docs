@@ -13,13 +13,11 @@ Display current status of schema, vault, and configuration.
 
 ## Description
 
-The `status` command provides a quick overview of:
+The `status` command shows the current schema version, the vault state and the integrity mode.
 
-- **Schema status** - Current version, last modified, pending changes
-- **Vault status** - Registered versions, integrity, paranoid mode
-- **Configuration** - Debug settings and project config
-
-Use this command to check project health and vault state.
+<Note>
+  `status` reads `schema.cham` from the current directory. In projects created with `chameleon init`, where schemas live in `schemas/`, the schema section may report the file as missing even when the vault is healthy. Use [`chameleon verify`](/cli/verify) for the integrity check and `chameleon migrate --dry-run` to compare the schema against the vault.
+</Note>
 
 ## Examples
 
@@ -35,7 +33,7 @@ chameleon status
 ────────────────────────────────────────────
 
 Schema:
-  Status:          ⚠️  No vault initialized
+  Status:          No vault initialized
   Action:          Run 'chameleon migrate' to start
 
 Vault:
@@ -61,12 +59,12 @@ Schema:
   Current version:  v001
   Hash:            3f2a8b9c...
   Last modified:   2 hours ago
-  Status:          ✓ Up to date
+  Status:          Up to date
 
 Vault:
   Versions:        1 registered
-  Integrity:       ✓ OK
-  Mode:            🛡️ readonly
+  Integrity:       OK
+  Mode:            readonly
 
 Configuration:
   Debug Level:     off
@@ -91,12 +89,12 @@ Schema:
   Current version:  v001
   Hash:            3f2a8b9c...
   Last modified:   just now
-  Status:          ⚠️  Schema modified (not registered)
+  Status:          Schema modified (not registered)
 
 Vault:
   Versions:        1 registered
-  Integrity:       ✓ OK
-  Mode:            ⚙️ standard
+  Integrity:          OK
+  Mode:               standard
 
 Configuration:
   Debug Level:     off
@@ -117,12 +115,12 @@ Schema:
   Current version:  v003
   Hash:            9e2f5a1b...
   Last modified:   5 minutes ago
-  Status:          ✓ Up to date
+  Status:          Up to date
 
 Vault:
   Versions:        3 registered
-  Integrity:       ✓ OK
-  Mode:            ⚙️ standard
+  Integrity:       OK
+  Mode:            standard
 
 Configuration:
   Debug Level:     off
@@ -143,12 +141,12 @@ Schema:
   Current version:  v002
   Hash:            7d4e1c2a...
   Last modified:   1 day ago
-  Status:          ✓ Up to date
+  Status:          Up to date
 
 Vault:
   Versions:        2 registered
-  Integrity:       ❌ 1 issues
-  Mode:            🛡️ readonly
+  Integrity:       1 issue(s)
+  Mode:            readonly
 
 Configuration:
   Debug Level:     off
@@ -180,9 +178,9 @@ Configuration:
 
 <ParamField path="Status" type="string">
   Current schema state:
-  - ✓ Up to date - No pending changes
-  - ⚠️ Schema modified - Changes not yet migrated
-  - ⚠️ No vault initialized - First-time setup needed
+  - Up to date - No pending changes
+  - Schema modified - Changes not yet migrated
+  - No vault initialized - First-time setup needed
 </ParamField>
 
 ### Vault Section
@@ -194,27 +192,18 @@ Configuration:
 </ParamField>
 
 <ParamField path="Integrity" type="string">
-  Cryptographic verification result:
-  - ✓ OK - All hashes verified
-  - ❌ N issues - Tampering detected
+  The stored hashes do not match the files. This detects accidental or casual changes; it does not authenticate who made them.
+  - OK - All hashes verified
+  - N issue(s) - Stored hashes do not match the files
 </ParamField>
 
 <ParamField path="Mode" type="string">
-  Current paranoid mode:
-  - 🛡️ readonly - Schema locked (default)
-  - ⚙️ standard - Controlled changes allowed
-  - 👑 privileged - DBA access
-  - 🚨 emergency - Incident recovery
+  Current integrity mode:
+  - readonly - Schema locked (default)
+  - standard - Controlled changes allowed
+  - privileged - DBA access
+  - emergency - Incident recovery
 </ParamField>
-
-## Paranoid Mode Icons
-
-| Icon | Mode | Description |
-|------|------|-------------|
-| 🛡️ | `readonly` | Schema modifications blocked (default) |
-| ⚙️ | `standard` | Controlled schema changes allowed |
-| 👑 | `privileged` | DBA-level access with logging |
-| 🚨 | `emergency` | Emergency recovery mode |
 
 ## Time Formatting
 
@@ -231,11 +220,11 @@ Configuration:
 
 ```
 Schema:
-  Status:          ⚠️  Schema modified (not registered)
+  Status:          Schema modified (not registered)
   
 Vault:
-  Integrity:       ✓ OK
-  Mode:            ⚙️ standard
+  Integrity:       OK
+  Mode:            standard
 ```
 
 **Action:**
@@ -247,7 +236,7 @@ chameleon migrate --apply
 
 ```
 Vault:
-  Mode:            🛡️ readonly
+  Mode:            readonly
 ```
 
 **Action:**
@@ -260,7 +249,7 @@ chameleon config set mode=standard
 
 ```
 Vault:
-  Integrity:       ❌ 2 issues
+  Integrity:       2 issue(s)
 ```
 
 **Action:**
@@ -273,7 +262,7 @@ chameleon verify
 
 ```
 Schema:
-  Status:          ⚠️  No vault initialized
+  Status:          No vault initialized
 ```
 
 **Action:**
@@ -287,7 +276,7 @@ chameleon migrate --apply
 
 ```
 Schema:
-  Status:          ⚠️  No vault initialized
+  Status:          No vault initialized
   Action:          Run 'chameleon migrate' to start
 ```
 
@@ -301,7 +290,7 @@ chameleon migrate --apply
 ### Cannot Read Vault
 
 ```
-❌ Failed to load vault: permission denied
+Failed to load vault: permission denied
 ```
 
 **Solution:**
@@ -315,15 +304,12 @@ chmod -R u+r .chameleon/vault/
 
 ```
 Schema Files:
-  ⚠️  schema *.cham not found
+  schema *.cham not found
 ```
 
 **Solution:**
-Regenerate merged schema:
+Run the command from the directory that contains `schema.cham`, or use `chameleon migrate --dry-run`, which reads `schema.paths` from `.chameleon.yml`.
 
-```bash
-chameleon migrate --check
-```
 
 ## Quick Status Check Script
 
@@ -331,30 +317,10 @@ chameleon migrate --check
 #!/bin/bash
 # Quick status check for CI/CD
 
-OUTPUT=$(chameleon status)
-
-if echo "$OUTPUT" | grep -q "✓ OK"; then
-  echo "✅ Vault integrity OK"
-  exit 0
-else
-  echo "❌ Vault has issues"
-  exit 1
-fi
+chameleon verify > /dev/null && echo "Vault integrity OK" || { echo "Vault has issues"; exit 1; }
 ```
 
 ## Integration Examples
-
-### Pre-Commit Hook
-
-```bash
-#!/bin/bash
-# .git/hooks/pre-commit
-
-if ! chameleon status | grep -q "✓ Up to date"; then
-  echo "⚠️  Warning: Schema has uncommitted changes"
-  chameleon status
-fi
-```
 
 ### Monitoring Script
 
@@ -362,16 +328,7 @@ fi
 #!/bin/bash
 # /usr/local/bin/check-chameleon-vault
 
-OUTPUT=$(chameleon status)
-
-if echo "$OUTPUT" | grep -q "❌"; then
-  echo "CRITICAL: Vault integrity violation"
-  echo "$OUTPUT"
-  exit 2
-fi
-
-echo "OK: Vault healthy"
-exit 0
+chameleon verify > /dev/null && echo "OK: Vault healthy" || { echo "CRITICAL: Vault has issues"; exit 1; }
 ```
 
 ## See Also

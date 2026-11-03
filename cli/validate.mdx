@@ -9,86 +9,63 @@ description: 'Validate a ChameleonDB schema file'
 chameleon validate [file]
 ```
 
-Validate a schema file for syntax and semantic errors.
+Validate one schema file for syntax and semantic errors.
 
 ## Description
 
-The `validate` command checks schema files for:
+`validate` reads a single `.cham` file, parses it and type-checks it. It checks:
 
-- **Syntax errors** - Malformed schema syntax
-- **Type errors** - Invalid or unknown types
-- **Reference errors** - Missing entities or fields
-- **Constraint errors** - Invalid primary keys, unique constraints
-- **Circular dependencies** - Detect entity reference cycles
+- **Syntax** - Entity, field and relation declarations
+- **Primary keys** - Each entity has exactly one
+- **Relations** - Target entities exist, foreign keys exist, and a has-many relation declares its `via` field
+- **Duplicates** - Entity and field names are unique
+- **Annotations** - `@vector` only on `vector(N)` fields; no backend annotations on primary or unique fields
+- **Default values** - The default matches the field type
+- **Circular dependencies** - Cycles between has-one and has-many relations
 
-If no file is specified, looks for `schema.cham` in the current directory.
+<Note>
+  `validate` looks at one file. It does not merge several files, so a relation to an entity defined in another file is reported as unknown. To validate the merged schema from all the files in `schema.paths`, use `chameleon migrate --dry-run`.
+</Note>
 
 ## Arguments
 
 <ParamField path="file" type="string" optional>
-  Path to schema file to validate
-  
-  **Default:** `schema.cham` in current directory
+  Path to the schema file.
+
+  **Default:** `schema.cham` in the current directory. Projects created with `chameleon init` keep their schemas in `schemas/`, so pass the path explicitly, for example `chameleon validate schemas/example.cham`.
 </ParamField>
 
 ## Flags
 
-<ParamField path="--verbose" type="boolean" default="false">
-  Show detailed validation checks passed
-  
-  ```bash
-  chameleon validate --verbose
-  ```
+<ParamField path="-v, --verbose" type="boolean" default="false">
+  After a successful validation, print the list of checks that were performed.
 </ParamField>
 
 ## Examples
 
-### Validate Default Schema
+### Valid schema
 
 ```bash
-chameleon validate
+chameleon validate schemas/example.cham
 ```
 
-**Output (valid):**
 ```
-ℹ Validating schema.cham...
+ℹ Validating schemas/example.cham...
 ✓ Schema is valid
 ```
 
-**Output (with --verbose):**
-```
-ℹ Validating schema.cham...
-✓ Schema is valid
+With `--verbose`, a list of the checks performed follows.
 
-Validation checks passed:
-  ✓ Syntax is correct
-  ✓ All entity references exist
-  ✓ Foreign keys are consistent
-  ✓ Primary keys are defined
-  ✓ No circular dependencies
-```
+### Errors
 
-### Validate Specific File
+The message text comes from the Rust core. Parse errors include the line and column; type-check errors name the entity and field involved.
 
-```bash
-chameleon validate schemas/users.cham
-```
+#### Syntax error
 
-**Output:**
-```
-ℹ Validating schemas/users.cham...
-✓ Schema is valid
-```
-
-### Validation Errors
-
-#### Syntax Error
-
-**schemas/invalid.cham:**
 ```chameleon
 entity User {
     id: uuid primary
-    email: strnig unique,  // Typo: 'strnig' instead of 'string'
+    email: string unique,
 }
 ```
 
@@ -96,24 +73,17 @@ entity User {
 chameleon validate schemas/invalid.cham
 ```
 
-**Output:**
 ```
 ℹ Validating schemas/invalid.cham...
-❌ Validation failed
+✗ Validation failed
 
-Error at line 3, column 13:
-  3 │     email: strnig unique,
-    │            ^^^^^^
-    │ Unknown type: strnig
-
-Help: Did you mean 'string'?
-
-❌ schema validation failed
+Parse error at line 3, column 5: Unexpected token: Token(4, "email"), expected one of: ",", "@cache", ...
 ```
 
-#### Missing Primary Key
+The list of expected tokens depends on the position of the error. A missing comma at the end of a field is a common cause.
 
-**schemas/no-pk.cham:**
+#### Missing primary key
+
 ```chameleon
 entity Post {
     title: string,
@@ -121,206 +91,76 @@ entity Post {
 }
 ```
 
-```bash
-chameleon validate schemas/no-pk.cham
+```
+Entity 'Post' has no primary key
 ```
 
-**Output:**
-```
-ℹ Validating schemas/no-pk.cham...
-❌ Validation failed
+#### Unknown entity in a relation
 
-Entity 'Post' must have a primary key
-  Suggestion: Add a primary key field:
-    id: uuid primary,
-
-❌ schema validation failed
-```
-
-#### Invalid Reference
-
-**schemas/bad-ref.cham:**
 ```chameleon
 entity Post {
     id: uuid primary,
-    author: UnknownEntity,  // Entity doesn't exist
+    author: UnknownEntity,
 }
 ```
 
-```bash
-chameleon validate schemas/bad-ref.cham
+```
+Entity 'Post' references unknown entity 'UnknownEntity' in relation 'author'
 ```
 
-**Output:**
-```
-ℹ Validating schemas/bad-ref.cham...
-❌ Validation failed
+#### Has-many without `via`
 
-Entity 'UnknownEntity' not found
-  Referenced in: Post.author
-  
-  Suggestion: Define the entity or check for typos
-
-❌ schema validation failed
-```
-
-#### Circular Dependency
-
-**schemas/circular.cham:**
 ```chameleon
 entity User {
     id: uuid primary,
     posts: [Post],
 }
-
-entity Post {
-    id: uuid primary,
-    author: User,
-    // Circular: Post -> User -> Post
-}
 ```
 
-```bash
-chameleon validate schemas/circular.cham
-```
+A has-many relation must declare the field that holds the foreign key:
 
-**Output:**
-```
-ℹ Validating schemas/circular.cham...
-❌ Validation failed
-
-Circular dependency detected:
-  User -> Post -> User
-  
-  Suggestion: Use foreign keys instead of direct references
-
-❌ schema validation failed
-```
-
-## Valid Schema Example
-
-**schemas/blog.cham:**
 ```chameleon
-entity User {
-    id: uuid primary,
-    email: string unique,
-    name: string,
-    created_at: timestamp default now(),
-}
-
-entity Post {
-    id: uuid primary,
-    title: string,
-    content: string,
-    published: bool,
-    author_id: uuid,
-    created_at: timestamp default now(),
-}
-
-entity Comment {
-    id: uuid primary,
-    content: string,
-    post_id: uuid,
-    user_id: uuid,
-    created_at: timestamp default now(),
-}
+posts: [Post] via author_id,
 ```
 
-```bash
-chameleon validate schemas/blog.cham
-```
-
-**Output:**
-```
-ℹ Validating schemas/blog.cham...
-✓ Schema is valid
-```
-
-## File Not Found
+### File not found
 
 ```bash
 chameleon validate missing.cham
 ```
 
-**Output:**
 ```
-❌ schema file not found: missing.cham
+schema file not found: missing.cham
 ```
 
-## Validation Checks
+## Exit codes
 
-The validator performs these checks:
+- `0` - The schema is valid
+- Non-zero - Validation failed or the file was not found
 
-### 1. Syntax Validation
-- Correct entity declarations
-- Valid field syntax
-- Proper use of keywords (primary, unique, default)
+## Integration with migrate
 
-### 2. Type Checking
-- All types are recognized (uuid, string, int, bool, timestamp, etc.)
-- Array types are properly declared
-
-### 3. Semantic Validation
-- Each entity has a primary key
-- Referenced entities exist
-- Foreign key types match target primary keys
-- No duplicate field names within an entity
-
-### 4. Constraint Validation
-- Unique constraints are properly defined
-- Default values match field types
-- Indexes reference existing fields
-
-### 5. Relationship Validation
-- Foreign key relationships are valid
-- No unresolvable circular dependencies
-
-## Exit Codes
-
-- `0` - Schema is valid
-- `1` - Validation failed or file not found
-
-## Integration with Migrate
-
-Validation is automatically performed during migration:
+`chameleon migrate` loads and merges all the schema files from `schema.paths` and validates the result before it generates any SQL. If validation fails, the migration is aborted.
 
 ```bash
 chameleon migrate --dry-run
 ```
 
-If validation fails, migration is aborted:
+## Best practices
 
-```
-ℹ Loading schemas from: [./schemas]
-✓ Found 1 schema file(s): [users.cham]
-❌ failed to parse merged schemas:
-   Error in users.cham:5
-   Unknown type 'strnig'
-
-❌ Migration aborted
-```
-
-## Best Practices
-
-### 1. Validate Before Committing
+### Validate before committing
 
 ```bash
-# Git pre-commit hook
+# .git/hooks/pre-commit
 #!/bin/bash
-chameleon validate || exit 1
-```
-
-### 2. Validate All Schemas
-
-If you have multiple schema files:
-
-```bash
 for file in schemas/*.cham; do
   chameleon validate "$file" || exit 1
 done
 ```
 
-### 3. CI/CD Integration
+Remember that each file is validated on its own: if entities reference each other across files, run `chameleon migrate --dry-run` instead.
+
+### CI
 
 ```yaml
 # .github/workflows/validate.yml
@@ -330,38 +170,25 @@ jobs:
   validate:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
       - name: Install ChameleonDB
-        run: curl -sSL https://chameleondb.dev/install | sh
+        run: |
+          curl -sSL https://chameleondb.dev/install -o install.sh
+          # Review install.sh before running it. It does not verify checksums.
+          sh install.sh
       - name: Validate schema
-        run: chameleon validate
+        run: chameleon validate schemas/example.cham
 ```
 
 ## Troubleshooting
 
-### Validation Passes but Migration Fails
+### Validation passes but the migration fails
 
-The `validate` command only checks syntax and semantics, not database compatibility.
+`validate` checks the schema, not its compatibility with your database. Use `chameleon migrate --dry-run` to see the generated SQL, and test it against a disposable database.
 
-Use `migrate --dry-run` to check generated SQL:
+## See also
 
-```bash
-chameleon migrate --dry-run
-```
-
-### Multiple Schema Files
-
-To validate across multiple files, use `migrate --check`:
-
-```bash
-chameleon migrate --check
-```
-
-This validates the merged schema from all files in `schema.paths`.
-
-## See Also
-
-- [`chameleon migrate`](/cli/migrate) - Apply migrations (includes validation)
-- [`chameleon init`](/cli/init) - Initialize project with example schema
-- [Schema Reference](/schema/entities) - Learn schema syntax
+- [`chameleon migrate`](/cli/migrate) - Preview and apply migrations (validates the merged schema)
+- [`chameleon init`](/cli/init) - Initialize a project with an example schema
+- [Schema Reference](/schema/entities) - Schema syntax
 - [Schema Types](/schema/fields-types) - Available field types

@@ -1,30 +1,28 @@
 ---
 title: Schema Language
-description: Domain-first data modeling with the ChameleonDB schema language
+description: Define your data model in .cham files
 ---
 
-ChameleonDB includes a **domain-specific language (DSL)** for defining data models as semantic domains, not raw SQL tables. The language has its own syntax, parser, type system, and validation rules.
+ChameleonDB has a small **domain-specific language** for describing a data model: entities, fields, relations, constraints and defaults. Schemas live in `.cham` files, are parsed and type-checked by the Rust core, and are used to validate queries and generate PostgreSQL DDL.
 
 ## Overview
 
-The ChameleonDB schema language allows you to:
+With the schema language you can:
 
-- Define entities, fields, and relationships
-- Specify types, constraints, and defaults
-- Add backend annotations for future optimization
-- Express intent clearly without SQL boilerplate
+- Define entities, fields and relations
+- Set types, constraints and defaults
+- Attach backend annotations (metadata only, for now)
+- Have the schema checked before anything runs
 
 <Info>
-The schema language is **compiled and validated** before execution. Invalid schemas fail at compile time, not runtime.
+  A schema is parsed and type-checked before any SQL is generated. Syntax errors, unknown relation targets, missing primary keys and the other checks listed below are reported at that point, not at query time.
 </Info>
 
-## Basic Syntax
+## Basic syntax
 
-### Entities
+### Entities and fields
 
-Define domain entities using the `entity` keyword:
-
-```go
+```chameleon
 entity User {
     id: uuid primary,
     email: string unique,
@@ -33,212 +31,140 @@ entity User {
 }
 ```
 
-### Fields
+A field is `name: type`, followed by optional modifiers, and ends with a comma. Comments use `//`.
 
-Each field has:
-- **Name** - Identifier (e.g., `email`)
-- **Type** - Data type (e.g., `string`, `uuid`, `timestamp`)
-- **Modifiers** - Optional constraints (e.g., `primary`, `unique`)
-- **Defaults** - Optional default values (e.g., `default now()`)
+## Types
 
-### Relationships
+| Type | PostgreSQL | Notes |
+|------|-----------|-------|
+| `uuid` | `UUID` | |
+| `string` | `VARCHAR` | |
+| `int` | `INTEGER` | |
+| `float` | `DOUBLE PRECISION` | |
+| `decimal` | `NUMERIC` | |
+| `bool` | `BOOLEAN` | |
+| `timestamp` | `TIMESTAMP` | |
+| `vector(N)` | `VECTOR(N)` | Dimension `N`; requires the pgvector extension in PostgreSQL |
+| `[type]` | `type[]` | For example `[string]` becomes `VARCHAR[]` |
 
-Express relationships directly in the schema:
+There are no separate `date` or `time` types. Use `timestamp`.
 
-```go
+### Nullable fields
+
+Fields are `NOT NULL` unless you add the `nullable` modifier:
+
+```chameleon
 entity User {
     id: uuid primary,
-    email: string unique,
-    name: string,
-    posts: [Post] via author_id,    // One-to-many
-}
-
-entity Post {
-    id: uuid primary,
-    title: string,
-    content: string,
-    author_id: uuid,
-    author: User,                    // Many-to-one
-}
-```
-
-## Type System
-
-### Primitive Types
-
-| Type | Description | Example |
-|------|-------------|----------|
-| `string` | Text data | `"John Doe"` |
-| `int` | Integer numbers | `42` |
-| `decimal` | Decimal numbers | `99.99` |
-| `bool` | Boolean values | `true`, `false` |
-| `uuid` | UUID identifiers | `550e8400-e29b-41d4-a716-446655440000` |
-| `timestamp` | Date and time | `2026-02-20T15:45:00Z` |
-| `date` | Date only | `2026-02-20` |
-| `time` | Time only | `15:45:00` |
-
-### Special Types
-
-```go
-// Vector type (for ML/AI features)
-embedding: vector(384)
-
-// Arrays
-tags: [string]
-
-// Optional fields (nullable)
-middle_name: string?
-```
-
-### Type Validation
-
-The type checker validates:
-- ✅ All field types are valid
-- ✅ References to other entities exist
-- ✅ Primary keys are defined
-- ✅ Foreign keys match target types
-- ✅ No circular ownership dependencies
-
-## Constraints
-
-### Primary Keys
-
-Every entity **must** have exactly one primary key:
-
-```go
-entity User {
-    id: uuid primary,    // ✅ Valid
-    // ...
+    name: string,               // NOT NULL
+    middle_name: string nullable,
 }
 ```
 
 <Warning>
-Entities without a primary key will fail validation.
+  The `string?` shorthand is not supported and fails to parse.
 </Warning>
 
-### Unique Constraints
+## Constraints
 
-```go
-entity User {
-    id: uuid primary,
-    email: string unique,    // Unique constraint
-    name: string,
-}
+### Primary key
+
+Every entity must have exactly one primary key:
+
+```chameleon
+id: uuid primary,
 ```
 
-### Not Null
+An entity without one is rejected: `Entity 'Post' has no primary key`.
 
-By default, all fields are NOT NULL unless marked optional:
+### Unique
 
-```go
-entity User {
-    name: string,         // NOT NULL (default)
-    middle_name: string?, // NULL allowed
-}
+```chameleon
+email: string unique,
 ```
 
-## Default Values
+## Default values
 
-Specify default values with the `default` keyword:
-
-```go
+```chameleon
 entity User {
-    id: uuid primary,
+    id: uuid primary default uuid(),
     created_at: timestamp default now(),
     status: string default "active",
     is_verified: bool default false,
+    login_count: int default 0,
 }
 ```
 
-### Supported Default Functions
+Supported defaults:
 
 - `now()` - Current timestamp
-- `uuid()` - Generate UUID (backend-specific)
-- Literal values: strings, numbers, booleans
+- `uuid()` or `uuid_v4()` - Random UUID, generated by PostgreSQL (`gen_random_uuid()`)
+- Literals: strings, booleans, integers and floats
 
-## Relationships
+The default must match the field type; the type checker rejects mismatches.
 
-### One-to-Many
+## Relations
 
-```go
+Relations are declared inside an entity, next to the fields. There are two forms.
+
+### Has-many: `[Target] via foreign_key`
+
+```chameleon
 entity User {
     id: uuid primary,
-    posts: [Post] via author_id,    // Collection
+    posts: [Post] via author_id,
 }
 
 entity Post {
     id: uuid primary,
     author_id: uuid,
-    author: User,                    // Reference
+    author: User,
 }
 ```
 
-### Many-to-One
+`via` names the field in the target entity that holds the foreign key, and that field must exist. A has-many without `via` is rejected.
 
-```go
-entity Post {
-    id: uuid primary,
-    author_id: uuid,
-    author: User,    // Many posts → one user
-}
+### Belongs-to: `Target`
 
-entity User {
-    id: uuid primary,
-}
-```
+A relation to a single entity, as `author: User` above. The foreign key field (`author_id`) is a normal field you declare yourself.
 
-### One-to-One
+### Foreign keys in the generated SQL
 
-```go
-entity User {
-    id: uuid primary,
-    profile: Profile,
-}
-
-entity Profile {
-    id: uuid primary,
-    user_id: uuid unique,    // Unique makes it 1:1
-    bio: string,
-}
-```
+Foreign key constraints are generated from has-many relations (`FOREIGN KEY (author_id) REFERENCES users(id)`). A belongs-to relation on its own does not generate a constraint.
 
 <Note>
-Relationship validation happens at compile time. Invalid references fail before any code runs.
+  A one-to-one shape can be modeled with a belongs-to relation plus a `unique` foreign key field. There is no dedicated one-to-one syntax.
 </Note>
 
 ## Annotations
 
-Annotations provide **semantic hints** about data storage without changing the logical model:
+Backend annotations are hints attached to a field:
 
-```go
+```chameleon
 entity User {
     id: uuid primary,
-    email: string unique,
-    session_token: string @cache,        // Hint: cache-friendly
-    monthly_spent: decimal @olap,        // Hint: analytical queries
-    embedding: vector(384) @vector,      // Hint: vector search
+    session_token: string @cache,
+    monthly_spent: decimal @olap,
+    embedding: vector(384) @vector,
 }
 ```
 
-### Available Annotations
-
-| Annotation | Purpose | Example |
-|------------|---------|----------|
-| `@cache` | Cache-friendly data | Session tokens |
-| `@olap` | Analytical queries | Aggregates, metrics |
-| `@vector` | Vector search | ML embeddings |
+| Annotation | Intended use |
+|-----------|--------------|
+| `@cache` | Cache-friendly data |
+| `@olap` | Analytical queries |
+| `@vector` | Vector search; only valid on `vector(N)` fields |
+| `@ml` | Machine-learning features |
 
 <Info>
-Annotations are validated at compile time but currently act as declarative metadata. Future versions will use them for backend routing.
+  Annotations are validated and carried in the schema, but they do not change the generated SQL or route to other backends today. ChameleonDB targets PostgreSQL only.
 </Info>
 
-## Complete Example
+## Complete example
 
-A full schema with multiple entities and relationships:
-
-```go
+```chameleon
 entity User {
-    id: uuid primary,
+    id: uuid primary default uuid(),
     email: string unique,
     name: string,
     created_at: timestamp default now(),
@@ -247,7 +173,7 @@ entity User {
 }
 
 entity Post {
-    id: uuid primary,
+    id: uuid primary default uuid(),
     title: string,
     content: string,
     published: bool default false,
@@ -257,17 +183,16 @@ entity Post {
 }
 
 entity Order {
-    id: uuid primary,
+    id: uuid primary default uuid(),
     total: decimal,
     status: string default "pending",
     user_id: uuid,
     user: User,
     items: [OrderItem] via order_id,
-    created_at: timestamp default now(),
 }
 
 entity OrderItem {
-    id: uuid primary,
+    id: uuid primary default uuid(),
     order_id: uuid,
     product_name: string,
     quantity: int,
@@ -276,129 +201,83 @@ entity OrderItem {
 }
 ```
 
-## Validation Pipeline
+## Validation
 
-Schemas go through a three-stage validation pipeline:
+Schemas go through two stages:
 
-```
-1. Parser (LALRPOP)
-   ├─ Syntax validation
-   ├─ AST generation
-   └─ Basic structure checks
-       ↓
-2. Type Checker (Rust)
-   ├─ Relations validation
-   │  ├─ Entity references exist
-   │  └─ Foreign keys match types
-   ├─ Constraints validation
-   │  ├─ Primary keys defined
-   │  └─ Annotation rules
-   └─ Cycle detection
-       ↓
-3. Validated Schema
-   └─ Ready for execution
-```
+1. **Parser** (LALRPOP grammar) - Syntax, producing an AST
+2. **Type checker** - Semantic rules
 
-<Note>
-Invalid schemas fail at compile time with clear, contextual error messages.
-</Note>
+The type checker verifies that:
 
-## Error Messages
+- Every entity has exactly one primary key
+- Relation targets exist
+- Has-many relations declare `via`, and the foreign key field exists
+- Entity and field names are not duplicated
+- Defaults match their field type
+- `@vector` is only used on `vector(N)` fields, and backend annotations are not placed on primary or unique fields
+- There are no circular dependencies between relations
 
-ChameleonDB provides clear error messages:
+### Error messages
+
+Messages come from the Rust core. Parse errors include the line and column; type errors name the entity and the field.
 
 ```
-❌ Validation Error: Missing primary key
-   Entity: User
-   Problem: No field marked as 'primary'
-   Suggestion: Add 'primary' modifier to a field (usually 'id')
+Parse error at line 3, column 14: Invalid token
 
-❌ Validation Error: Invalid relation target
-   Entity: Post
-   Field: author
-   Problem: Entity 'Usr' does not exist (did you mean 'User'?)
+Entity 'Post' has no primary key
+
+Entity 'Post' references unknown entity 'Usr' in relation 'author'
 ```
 
-## Schema Files
+The checker does not suggest corrections ("did you mean...").
 
-Schemas are stored in `.cham` files:
+## Schema files
 
 ```bash
-# Single file
-schema.cham
-
-# Multiple files (auto-merged)
-schemas/
+schema.cham                 # one file
+schemas/                    # or several; they are merged
   ├── user.cham
   ├── post.cham
   └── order.cham
 ```
 
-<Info>
-Multiple `.cham` files are automatically merged during compilation.
-</Info>
+`chameleon migrate` loads every `.cham` file under `schema.paths` in `.chameleon.yml`, merges them and validates the result. `chameleon validate <file>` checks a single file in isolation, so a relation to an entity defined in another file is reported as unknown there.
 
-## Compilation
-
-Compile schemas with the CLI:
+## Using the CLI
 
 ```bash
-# Validate syntax
-chameleon validate
-
-# Generate migration
-chameleon migrate
-
-# Apply migration (registers in vault)
-chameleon migrate --apply
+chameleon validate schemas/user.cham   # one file
+chameleon migrate --dry-run            # merged schema + generated SQL
+chameleon migrate --apply              # register a version and apply
 ```
 
-## Best Practices
+<Warning>
+  `migrate` is currently create-only: it creates missing tables and leaves existing ones untouched. See [`chameleon migrate`](/cli/migrate).
+</Warning>
 
-1. **Use clear entity names** - `User`, `Post`, not `usr`, `p`
-2. **Always define primary keys** - Usually `id: uuid primary`
-3. **Make relationships explicit** - Use `via` for clarity
-4. **Use meaningful defaults** - `created_at: timestamp default now()`
-5. **Annotate intentionally** - Only when backend hints add value
-6. **Keep schemas versioned** - Commit `.cham` files to git
-7. **Document complex relationships** - Add comments for clarity
+## Schema evolution
 
-## Schema Evolution
+Each schema change that you migrate registers a new version in the [Schema Vault](/concepts/schema-vault), with its hash and parent. Adding a field to `User` and running `migrate --apply` records `v002`.
 
-Schemas evolve through the [Schema Vault](/concepts/schema-vault):
+Applying that change to an existing table (for example `ALTER TABLE ... ADD COLUMN`) is not done by ChameleonDB yet. The vault tracks the history of your schema; bringing an existing database in line with it is still manual.
 
-```bash
-# v001: Initial schema
-entity User {
-    id: uuid primary,
-    email: string unique,
-    name: string,
-}
+## Best practices
 
-# v002: Add age field
-entity User {
-    id: uuid primary,
-    email: string unique,
-    name: string,
-    age: int,              // NEW FIELD
-}
-```
+1. Use clear entity names (`User`, `Post`), in PascalCase. Table names are derived as snake_case plurals (`OrderItem` becomes `order_items`).
+2. Always define a primary key.
+3. Declare foreign key fields explicitly and connect them with `via`.
+4. Commit your `.cham` files to version control.
+5. Annotate only when you want the metadata; it has no runtime effect yet.
 
-Each change creates a new immutable version in the vault.
+## What the language is not
 
-## What ChameleonDB is NOT
+- Not a general-purpose programming language
+- Not a query language (see the [Query Builder](/query-builder))
+- Not SQL, though it generates SQL
 
-The schema language is **not**:
+## Next steps
 
-- ❌ A general-purpose programming language
-- ❌ A query language (see Query API)
-- ❌ SQL (though it generates SQL)
-- ❌ A replacement for your database
-
-It is a **domain-specific language** for defining data models.
-
-## Next Steps
-
-- Learn about the [Schema Vault](/concepts/schema-vault) for version management
-- Understand [Integrity Modes](/concepts/integrity-modes) for governance
-- Explore the [Architecture](/concepts/architecture)
+- [Schema Vault](/concepts/schema-vault)
+- [Integrity Modes](/concepts/integrity-modes)
+- [Architecture](/concepts/architecture)

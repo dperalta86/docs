@@ -20,43 +20,46 @@ description: 'Schema-governed database platform with explicit integrity guarante
 
 # Welcome to ChameleonDB
 
-ChameleonDB is a **schema-governed database platform** that treats schemas as first-class, immutable artifacts with explicit integrity guarantees.
+ChameleonDB helps you keep a reliable relationship between the schema you declare, the changes you make to it, and the real state of your database. It treats the schema as a versioned, hash-checked artifact, records every change in a local audit trail, and lets you restrict who may change the schema through integrity modes.
 
-Unlike traditional databases that treat schema evolution as an auxiliary concern, ChameleonDB **governs schemas at runtime** through versioning, cryptographic integrity, and explicit operational modes.
+It is not a database engine and not an ORM. Today it works with PostgreSQL only.
 
-## The Problem
+<Warning>
+  **ChameleonDB is alpha.** Interfaces and file formats may change. Releases before v1.1.0-alpha contain a vulnerability in query and mutation generation that is fixed in v1.1.0-alpha. If you use an earlier release, upgrade. See the [security advisory](https://github.com/chameleon-db/chameleondb/security/advisories/GHSA-2r6g-424r-6xmr).
+</Warning>
 
-Modern database systems enforce strong guarantees over data but treat schema evolution informally:
+## The problem
 
-- **Schema drift** happens silently over time
-- **Migration failures** leave databases in unknown states
-- **Authority** for schema changes is implicit, not enforced
-- **Audit trails** are external, incomplete, or missing
-- **Rollback** is manual and error-prone
+Database systems enforce strong guarantees over data but often treat schema evolution informally:
 
-## The ChameleonDB Solution
+- **Schema drift** can happen silently over time
+- **Failed migrations** can leave databases in an unknown state
+- **Authority** for schema changes is usually implicit, not enforced
+- **Audit trails** are often external, incomplete, or missing
+
+## What ChameleonDB does
 
 <CardGroup cols={2}>
   <Card title="Schema Vault" icon="vault">
-    Versioned, hash-verified schema storage with cryptographic integrity. Every migration creates an immutable snapshot with SHA256 verification.
+    Versioned, hash-checked storage of your schema. Each registered version is stored locally with a SHA-256 hash of its source text and a reference to its parent version.
   </Card>
   <Card title="Integrity Modes" icon="shield-halved">
-    Unix-style protection rings for schema governance. Ring-based modes (readonly/standard/privileged/emergency) enforce explicit authority.
+    Four ring-inspired modes (`readonly`, `standard`, `privileged`, `emergency`) decide whether the CLI allows schema changes. Raising the mode asks for a password.
   </Card>
-  <Card title="Complete Audit Trail" icon="list-check">
-    Append-only integrity log that never gets deleted. Track every schema change with timestamps, authors, and parent versions.
+  <Card title="Audit Trail" icon="list-check">
+    An append-only log records the events the tool performs, with timestamps and version references.
   </Card>
-  <Card title="Zero-Config" icon="bolt">
-    Auto-initialization on first migrate. No complex setup required - just define your schema and run.
+  <Card title="Schema Language" icon="file-code">
+    Declare entities, fields and relations in `.cham` files; parse and type-check them before anything touches your database.
   </Card>
 </CardGroup>
 
-## Quick Example
+## Quick example
 
 <Steps>
   <Step title="Define your schema">
-    Create versioned and hash-verified schemas:
-    
+    Declare entities in a `.cham` file:
+
     ```go schema.cham
     entity User {
         id: uuid primary,
@@ -76,43 +79,49 @@ Modern database systems enforce strong guarantees over data but treat schema evo
     ```
   </Step>
 
-  <Step title="Initialize with zero config">
-    Auto-creates Schema Vault:
-    
+  <Step title="Initialize, preview, apply">
     ```bash
-    chameleon init                  # Creates .chameleon/vault/
-    chameleon migrate --apply       # Registers v001, applies migration
+    chameleon init                  # creates .chameleon/, .chameleon.yml and schemas/example.cham
+    chameleon migrate --dry-run     # preview the SQL
+    chameleon migrate --apply       # registers v001 in the vault and applies the migration
     ```
+
+    New vaults start in `readonly` mode, which blocks schema changes. See the [Quick Start](/quickstart) for the full flow.
   </Step>
 
-  <Step title="Schema Vault tracks everything">
-    Every change is tracked:
-    
+  <Step title="The vault tracks every registered version">
     ```bash
     .chameleon/vault/
-    ├── manifest.json       # Current version + history
-    ├── integrity.log       # Append-only audit trail
+    ├── manifest.json       # current version and history
+    ├── mode.json           # current integrity mode
+    ├── integrity.log       # append-only audit trail
     ├── versions/
-    │   ├── v001.json      # Immutable snapshot
-    │   └── v002.json
+    │   └── v001.json       # snapshot of each registered version
     └── hashes/
-        ├── v001.hash      # SHA256 verification
-        └── v002.hash
+        └── v001.hash       # SHA-256 of each version
     ```
   </Step>
 </Steps>
 
-## What You Get
+## What works today
 
-- **Immutable schema versions** — Tamper-proof with SHA256 hashing
-- **Integrity verification** — Automatic checks before every operation
-- **Explicit governance** — Ring-based modes (readonly/standard/privileged/emergency)
-- **Complete audit trail** — Append-only log, never deleted
-- **Zero-config vault** — Auto-initializes on first migrate
-- **Password-protected upgrades** — Mode escalation requires auth
-- **Migration recovery** — Retry failed migrations automatically
+- **Schema language and checker.** Parse and type-check `.cham` files.
+- **Migration generation for PostgreSQL.** Preview the SQL with `--dry-run`, then apply it. See the warning above about how migrations behave today.
+- **Schema Vault.** Local versions with SHA-256 hashes and parent references.
+- **Integrity modes.** Four modes that control what the CLI allows.
+- **Integrity verification and audit log.** The vault is checked before operations; events are appended to a log.
+- **Introspection.** Generate a schema from an existing PostgreSQL database.
+- **Go data-access layer.** A query and mutation builder with field selection, eager loading and write guards. It is a supporting component, and its scope is under review.
 
-## Get Started
+## What the guarantees mean
+
+<Note>
+  - The vault **detects** changes made to its files outside the tool. It does **not** protect against someone who can edit both the files and their hashes.
+  - Integrity modes control what the **CLI** allows. They do not replace database permissions; a user with direct database access is not restricted by them.
+  - The hash is computed over the schema source text, so formatting changes alter it. A canonical form is planned.
+</Note>
+
+## Get started
 
 <CardGroup cols={3}>
   <Card
@@ -120,190 +129,111 @@ Modern database systems enforce strong guarantees over data but treat schema evo
     icon="rocket"
     href="/quickstart"
   >
-    Get started with ChameleonDB in 5 minutes
+    Create your first project
   </Card>
   <Card
     title="CLI Reference"
     icon="terminal"
     href="/cli/overview"
   >
-    Complete guide to all CLI commands
+    All CLI commands
   </Card>
   <Card
     title="API Reference"
     icon="code"
     href="/api/engine"
   >
-    Type-safe query and mutation API
+    The Go query and mutation API
   </Card>
 </CardGroup>
 
-## Key Features
+## Key features
 
-### Schema Vault (v1.0)
+### Schema Vault
 
-Versioned, immutable schema storage with cryptographic integrity:
+Every registered schema version is recorded with a hash and its parent:
 
 ```bash
-# Every migration creates a new version
-$ chameleon migrate --apply
-
-📦 Registering new schema version...
-   ✓ Registered as v002 (hash: 7d4e1c2a...)
-   ✓ Parent: v001
-
-✅ Migration applied successfully
-✅ Schema v002 locked in vault
+chameleon journal schema         # version history
+chameleon journal schema v001    # one version
+chameleon verify                 # check the vault against its recorded hashes
 ```
 
-<Tip>
-  Use `chameleon journal schema` to view your complete version history with hashes, dates, authors, and changes.
-</Tip>
+### Integrity modes
 
-### Integrity Modes (v1.0)
-
-Unix-style protection rings for schema governance:
-
-| Mode | Ring | Use Case | Schema Changes |
-|------|------|----------|----------------|
-| **readonly** | R3 | Production (default) | ❌ Blocked |
-| **standard** | R2 | Development teams | ✅ Controlled |
-| **privileged** | R1 | DBAs | ✅ Direct (logged) |
-| **emergency** | R0 | Incident recovery | ✅ No checks (audited) |
+| Mode | Ring | Intended use | Schema changes |
+|------|------|--------------|----------------|
+| `readonly` | R3 | Production (default) | Blocked |
+| `standard` | R2 | Development teams | Allowed through the normal flow |
+| `privileged` | R1 | DBAs | Allowed directly, logged |
+| `emergency` | R0 | Incident recovery | Allowed with checks relaxed, audited |
 
 ```bash
-# Default mode: readonly (schema locked)
-$ chameleon migrate --apply
-❌ readonly mode: schema modifications blocked
-
-# Upgrade to allow schema changes
-$ chameleon config set mode=standard
-🔐 Enter mode password: ****
-✅ Mode upgraded to standard
-
-# Now migrations are allowed
-$ chameleon migrate --apply
-✅ Migration applied successfully
+chameleon config get mode
+chameleon config set mode=standard    # upgrade: asks for the mode password
+chameleon config set mode=readonly    # downgrade: no password
 ```
 
 <Warning>
-  Mode upgrades require password authentication to prevent unauthorized schema changes in production.
+  The mode password is a local safeguard. Its storage is being reviewed, and it is not a substitute for database roles.
 </Warning>
 
-### Query System (v1.0)
+### Go data-access layer
 
-Graph-oriented, type-safe queries with field projection:
+A supporting component for querying and writing data from Go. Values are sent as bound parameters, and field names are validated against the schema.
 
 ```go
-// Query only the fields you need
-users := db.Query("User").
-    Select("id", "name", "email").  // Partial selection
+users, err := eng.Query("User").
+    Select("id", "name", "email").
     Filter("age", "gt", 25).
-    Include("posts").                // Eager load (no N+1)
+    Include("posts").
     Execute(ctx)
+```
 
-// Debug mode (see generated SQL)
-users := db.Query("User").
-    Select("id", "name").
+Use `Debug()` to see the SQL and its parameters. The SQL text contains placeholders and the values are listed separately:
+
+```go
+result, err := eng.Query("User").
+    Select("id", "name", "email").
     Filter("email", "like", "ana").
     Debug().
     Execute(ctx)
 
-// Output:
-// [SQL] Query User
-// SELECT id, name FROM users WHERE email LIKE '%ana%'
-// [TRACE] Query on User: 2.3ms, 3 rows
+// [SQL]
+// SELECT "id", "name", "email"
+// FROM "users"
+// WHERE "email" LIKE $1 ESCAPE '\'
+//
+// [PARAMS]
+// $1 = String("%ana%")
 ```
 
-### IdentityMap (v1.0)
+An update or delete without a filter is rejected with a `SafetyError`. See [Mutations](/api/mutations).
 
-Automatic object deduplication in memory:
-
-```go
-// Without IdentityMap (wasteful)
-// If User has 100 posts, User object is duplicated 100 times in memory
-
-// With IdentityMap (efficient)
-result := db.Query("User").
-    Include("posts").
-    Execute(ctx)
-
-// User object appears only once
-// All 100 posts reference the same User instance
-// Memory savings: ~99% for large result sets
-```
+## Current status
 
 <Note>
-  IdentityMap is automatically enabled for all Include queries with zero configuration required.
+  ChameleonDB **v1.1.0-alpha** is available for early adopters. It is a security release; see the notice at the top of this page.
 </Note>
 
-## Why ChameleonDB?
+### Roadmap
 
-### vs Traditional Databases
+The roadmap is organised in horizons, ordered by priority and without dates. It is a plan, not a promise.
 
-| Traditional DB | ChameleonDB |
-|----------------|-------------|
-| ❌ Schema drift over time | ✅ Immutable, versioned schemas |
-| ❌ Informal governance | ✅ Explicit Integrity Modes |
-| ❌ No tamper detection | ✅ SHA256 hash verification |
-| ❌ External audit logs | ✅ Built-in integrity log |
-| ❌ Manual rollback | ✅ Version-based recovery |
+| Horizon | Focus | Status |
+|---------|-------|--------|
+| H0 | Trustworthy base: the code behaves predictably and its claims match reality | In progress |
+| H1a | Observe and drift: canonical model, introspection, baseline snapshots, drift reports | Planned |
+| H1b | Controlled change: risk-classified plans, gates, verification of control level | Planned |
+| H2 | Multi-environment platform: additional adapters, integrations, collaboration | Exploring |
+| H3 | Distributed and offline-first: compatibility between revisions, sync-engine integration | Exploring |
 
-### Key Differentiators
+Follow the work in the [issues](https://github.com/chameleon-db/chameleondb/issues) and read the [product definition](https://github.com/chameleon-db/chameleondb/blob/main/docs/product-definition.md).
 
-1. **Schema as First-Class Artifact**: Versioned, immutable, hash-verified
-2. **Runtime Governance**: Integrity Modes enforced by the system
-3. **Zero-Config Vault**: Auto-initializes, works out of the box
-4. **Complete Audit Trail**: Append-only, never deleted
-5. **Explicit Authority**: Mode upgrades require password
-
-## Current Status
-
-<Note>
-  ChameleonDB **v1.0-alpha** is now available for early adopters. Your feedback shapes the product.
-</Note>
-
-### Available Now (v1.0-alpha)
-
-**Schema Governance:**
-- ✅ Schema Vault (versioned, hash-verified)
-- ✅ Integrity Modes (readonly/standard/privileged/emergency)
-- ✅ Password-protected mode upgrades
-- ✅ Automatic integrity verification
-- ✅ Append-only audit trail
-- ✅ Migration recovery (retry failed migrations)
-
-**Query System:**
-- ✅ Schema parser and type checker
-- ✅ Query builder with filters
-- ✅ Field projection (`.Select()`)
-- ✅ Eager loading (`.Include()`)
-- ✅ Nested includes
-- ✅ IdentityMap (object deduplication)
-- ✅ Debug mode (`.Debug()`)
-
-**Tooling:**
-- ✅ CLI tools (init, migrate, verify, status)
-- ✅ Rich error messages with suggestions
-- ✅ PostgreSQL migration generator
-- ✅ Database introspection (PostgreSQL)
-- ✅ 300+ tests (unit + integration)
-
-### Coming Soon
-
-- **v1.1 (March 2026)**: Schema Vault rollback, Transaction support, Batch operations
-- **v1.2+ (Q2 2026)**: Additional backends (MySQL, DuckDB), Code generation, Multi-language support
-- **v1.5+ (2027)**: ML-based query optimization, Visual schema editor, Distributed vault
-
-## Community & Support
+## Community and support
 
 - **Documentation**: [https://chameleondb.dev/docs](https://chameleondb.dev/docs)
 - **Examples**: [https://github.com/chameleon-db/chameleon-examples](https://github.com/chameleon-db/chameleon-examples)
 - **Discord**: [https://chameleondb.dev/discord](https://chameleondb.dev/discord)
 - **GitHub Issues**: [https://github.com/chameleon-db/chameleondb/issues](https://github.com/chameleon-db/chameleondb/issues)
-
----
-
-<div align="center">
-  **Built with ❤️ for developers who care about schema integrity**
-</div>
+- **Security reports**: private, as described in [SECURITY.md](https://github.com/chameleon-db/chameleondb/blob/main/SECURITY.md)

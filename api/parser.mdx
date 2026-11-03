@@ -51,9 +51,8 @@ pub fn parse_schema(input: &str) -> Result<Schema, ChameleonError> {
 ```
 
 **Key features:**
-- Zero-copy parsing where possible
-- Enhanced error messages with source snippets
-- Line/column precision for all syntax errors
+- Error messages with source snippets
+- Line and column for syntax errors
 
 ## LALRPOP Grammar
 
@@ -182,6 +181,10 @@ impl Entity {
 }
 ```
 
+<Note>
+  `fields` and `relations` are `HashMap`s, so their iteration order is not stable between runs. Anything derived from them, such as the order of the columns in a generated `CREATE TABLE`, can vary. A deterministic order is planned.
+</Note>
+
 ### Field
 
 ```rust
@@ -201,6 +204,8 @@ pub struct Field {
 - `primary_key` - Entity identifier (required, exactly one per entity)
 - `unique` - Unique constraint (enforced at DB level)
 - `nullable` - NULL allowed (defaults to NOT NULL)
+
+Fields accept `primary`, `unique`, `nullable` and `default <value>` modifiers. Defaults can be `now()`, `uuid_v4()` or a literal; the type checker verifies that the default matches the field type.
 
 ### FieldType
 
@@ -246,12 +251,16 @@ pub enum RelationKind {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum BackendAnnotation {
     OLTP,        // Default (PostgreSQL)
-    Cache,       // @cache (planned: Redis)
-    OLAP,        // @olap (planned: DuckDB)
-    Vector,      // @vector (planned: pgvector/Milvus)
-    ML,          // @ml (planned: feature store)
+    Cache,
+    OLAP,
+    Vector,
+    ML,
 }
 ```
+
+<Note>
+  Only PostgreSQL (OLTP) is supported today. The `@cache`, `@olap`, `@vector` and `@ml` annotations are parsed and checked, but they do not route data to other engines.
+</Note>
 
 ## Error Enhancement
 
@@ -349,18 +358,7 @@ fn main() {
 - `$OUT_DIR/parser/schema.rs` - LR(1) parser state machine
 - Compile-time only - not included in library distribution
 
-## Performance Characteristics
-
-| Operation | Time | Notes |
-|-----------|------|-------|
-| Parse schema (cold) | ~10ms | One-time cost per schema load |
-| Parse schema (warm) | ~2ms | With OS page cache |
-| AST construction | ~1ms | Minimal allocation overhead |
-| Error enhancement | ~0.5ms | Only on parse failures |
-
-**Memory usage:**
-- Schema AST: ~50 bytes per field + ~80 bytes per relation
-- Parser state machine: ~200KB (generated at compile time)
+Parsing performance has not been benchmarked yet.
 
 ## Example Usage
 

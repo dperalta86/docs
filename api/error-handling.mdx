@@ -34,7 +34,7 @@ Occur before SQL generation when input doesn't match schema.
 </ResponseField>
 
 <ResponseField name="UnknownFieldError" type="error">
-  Field doesn't exist in entity schema
+  Field doesn't exist in the entity schema. Returned for insert and update fields and for filter fields of update and delete, before any SQL is sent.
 </ResponseField>
 
 <ResponseField name="UnknownEntityError" type="error">
@@ -69,6 +69,10 @@ Occur when safety guards prevent potentially dangerous operations.
   Operation blocked by safety guard (e.g., UPDATE/DELETE without WHERE)
 </ResponseField>
 
+<ResponseField name="AuthorizationError" type="error">
+  Reserved for a future release (`AUTHORIZATION_DENIED`). It is not returned by the current mutation paths.
+</ResponseField>
+
 ### Execution Errors
 
 <ResponseField name="NotFoundError" type="error">
@@ -76,7 +80,7 @@ Occur when safety guards prevent potentially dangerous operations.
 </ResponseField>
 
 <ResponseField name="ConflictError" type="error">
-  Concurrent modification detected (future: optimistic locking)
+  Reserved for a future release (optimistic locking). It is not returned today.
 </ResponseField>
 
 ## Error Inspection
@@ -270,12 +274,9 @@ if err != nil {
     }
 }
 
-// Error message:
-// SafetyError: Operation blocked by safety guard
-//   Operation: update_without_filter
-//   Would affect: unknown rows (threshold: 0)
-//   Message: UPDATE without filters is blocked
-//   Suggestion: Add Filter() to specify which records to update
+// The error is a SafetyError. Its Operation field is "update_without_filter"
+// (or "delete_without_filter" for a delete) and its Suggestion tells you to
+// add a Filter() call.
 ```
 
 ### Not Null Violation
