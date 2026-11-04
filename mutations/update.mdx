@@ -1,54 +1,40 @@
 ---
 title: Update Operations
-description: Safely modify existing records with WHERE clause requirements
+description: Modify existing records; a filter is always required
 ---
 
 ## Overview
 
-Update operations in ChameleonDB modify existing records with built-in safety guards. **All updates require a WHERE clause** to prevent accidental full-table modifications.
+`Update` builds an `UPDATE ... SET ... WHERE ... RETURNING *` statement. **A filter is required**: an update with no `Filter()` is rejected before any SQL is generated.
 
 <Warning>
-**Safety First**: ChameleonDB requires a `Filter()` clause for all updates. Attempting to update without a filter will result in a `SafetyError`.
+  Without a filter you get a `SafetyError`:
 
-This prevents catastrophic mistakes like:
-```go
-// This will FAIL (no WHERE clause)
-db.Update("User").
-    Set("name", "John").
-    Execute(ctx)
+  ```go
+  _, err := eng.Update("User").
+      Set("name", "John").
+      Execute(ctx)
+  // SafetyError: UPDATE requires a WHERE clause
+  ```
 
-// Error: SafetyError: UPDATE requires a WHERE clause
-//        Suggestion: Use Filter() or ForceUpdateAll()
-```
+  The message suggests `ForceUpdateAll()`, but **that method does not exist** in the current API. There is no way to run an unfiltered update through ChameleonDB.
 </Warning>
 
-## Basic Update
-
-Update a single record by ID:
+## Basic update
 
 ```go
-import (
-    "context"
-    "github.com/chameleon-db/chameleondb/chameleon/pkg/engine"
-)
-
-ctx := context.Background()
-
 result, err := eng.Update("User").
     Filter("id", "eq", userID).
     Set("name", "Ana Martinez").
     Execute(ctx)
-
 if err != nil {
-    log.Fatal(err)
+    return err
 }
 
-fmt.Printf("Updated %d rows\n", result.Affected)
+fmt.Printf("updated %d rows\n", result.Affected)
 ```
 
-## Update Multiple Fields
-
-Chain multiple `.Set()` calls to update several fields:
+## Several fields
 
 ```go
 result, err := eng.Update("User").
@@ -58,90 +44,58 @@ result, err := eng.Update("User").
     Execute(ctx)
 ```
 
-## Update with Complex Filters
+## Several filters
 
-Use multiple filters to target specific records:
+Filters are combined with `AND`:
 
 ```go
-// Update all unpublished posts by a specific author
 result, err := eng.Update("Post").
     Filter("author_id", "eq", authorID).
     Filter("published", "eq", false).
     Set("published", true).
     Execute(ctx)
-
-fmt.Printf("Published %d posts\n", result.Affected)
 ```
 
-## Conditional Updates
+Supported operators: `eq`, `neq` (or `ne`), `gt`, `gte`, `lt`, `lte`, `like`, `ilike`. Notes:
 
-Update records based on date ranges or other conditions:
+- In mutations `like` and `ilike` use the pattern as you pass it, so include the `%` yourself.
+- There is no `IS NULL` filter. `Filter("x", "eq", nil)` becomes `x = NULL`, which matches nothing.
+- Setting the same field and operator twice keeps only the last value.
+- Pass dates as strings, for example `"2026-01-01"`. A Go `time.Time` is not supported in filters yet.
 
 ```go
-// Update old posts created before a certain date
 result, err := eng.Update("Post").
     Filter("created_at", "lt", "2024-01-01").
     Set("archived", true).
     Execute(ctx)
 ```
 
-## Full-Table Updates (Use with Caution)
-
-If you genuinely need to update all records in a table, use `ForceUpdateAll()`:
-
-```go
-import "github.com/chameleon-db/chameleondb/chameleon/pkg/engine"
-
-// Update ALL users (requires explicit confirmation)
-result, err := eng.Update("User").
-    Set("notification_enabled", true).
-    ForceUpdateAll(). // Explicitly bypass safety check
-    Execute(ctx)
-
-if err != nil {
-    log.Fatal(err)
-}
-
-fmt.Printf("Updated all %d users\n", result.Affected)
-```
-
-<Warning>
-**Dangerous Operation**: `ForceUpdateAll()` bypasses the safety guard and updates **every record** in the table. Use this only when absolutely necessary and ensure you:
-
-- Understand the impact
-- Have backups in place
-- Are in the correct environment (not production)
-- Have tested the operation first
-</Warning>
-
-## Update Result
-
-The `UpdateResult` type provides information about the operation:
+## Result
 
 ```go
 type UpdateResult struct {
-    Affected int // Number of rows modified
-}
-
-result, err := eng.Update("User").
-    Filter("email", "eq", "old@mail.com").
-    Set("email", "new@mail.com").
-    Execute(ctx)
-
-if err != nil {
-    log.Fatal(err)
-}
-
-if result.Affected == 0 {
-    fmt.Println("No records matched the filter")
-} else {
-    fmt.Printf("Updated %d record(s)\n", result.Affected)
+    Records  []map[string]interface{} // updated rows (RETURNING *)
+    Affected int                      // number of rows updated
 }
 ```
 
-## Error Handling
+```go
+if result.Affected == 0 {
+    return fmt.Errorf("no record matched")
+}
+```
 
-Handle common update errors:
+## What is validated
+
+- The entity, every field in `Set` and every field in `Filter` exist
+- At least one `Set` and one `Filter`
+- The **primary key cannot be updated** (`ConstraintError`)
+- `uuid` fields hold a valid UUID string and `string` fields hold a Go `string`
+- Non-nullable fields are not set to `nil`
+
+Other types are not checked in Go; PostgreSQL validates them. Unique, foreign key and check constraints are enforced by PostgreSQL. See [Safety Guards](/mutations/safety).
+
+## Error handling
 
 ```go
 import "errors"
@@ -154,297 +108,97 @@ result, err := eng.Update("User").
 if err != nil {
     var uniqueErr *engine.UniqueConstraintError
     if errors.As(err, &uniqueErr) {
-        // Email already taken by another user
         return fmt.Errorf("email already in use: %w", err)
     }
-    
+
     var safetyErr *engine.SafetyError
     if errors.As(err, &safetyErr) {
-        // Missing WHERE clause
-        return fmt.Errorf("update requires filter: %w", err)
+        return fmt.Errorf("update needs a filter and a field: %w", err)
     }
-    
+
     return fmt.Errorf("update failed: %w", err)
 }
+_ = result
 ```
 
-## Debug Mode
-
-Inspect generated SQL with `.Debug()`:
+## Debug mode
 
 ```go
-result, err := eng.Update("User").
-    Filter("id", "eq", userID).
-    Set("name", "Ana").
-    Debug(). // Shows SQL and arguments
-    Execute(ctx)
-
-// Output:
-// [SQL] Update User
-// UPDATE users SET name = $1 WHERE id = $2
-// [ARGS] [Ana, 550e8400-e29b-41d4-a716-446655440000]
-// [TRACE] Update on User: 1.2ms, 1 rows affected
-```
-
-## Repository Pattern
-
-Recommended pattern for encapsulating update logic:
-
-```go
-package repository
-
-import (
-    "context"
-    "github.com/chameleon-db/chameleondb/chameleon/pkg/engine"
-)
-
-type UserRepository struct {
-    eng *engine.Engine
-}
-
-func (r *UserRepository) UpdateName(ctx context.Context, id, name string) (*engine.UpdateResult, error) {
-    return r.eng.Update("User").
-        Filter("id", "eq", id).
-        Set("name", name).
-        Execute(ctx)
-}
-
-func (r *UserRepository) UpdateEmail(ctx context.Context, id, email string) (*engine.UpdateResult, error) {
-    return r.eng.Update("User").
-        Filter("id", "eq", id).
-        Set("email", email).
-        Execute(ctx)
-}
-
-func (r *UserRepository) PublishPost(ctx context.Context, postID string) (*engine.UpdateResult, error) {
-    return r.eng.Update("Post").
-        Filter("id", "eq", postID).
-        Set("published", true).
-        Execute(ctx)
-}
-```
-
-## Best Practices
-
-### Always Use Specific Filters
-
-```go
-// Good: Update specific record by ID
 eng.Update("User").
     Filter("id", "eq", userID).
     Set("name", "Ana").
-    Execute(ctx)
-
-// Good: Update multiple records with clear criteria
-eng.Update("Post").
-    Filter("author_id", "eq", authorID).
-    Filter("status", "eq", "draft").
-    Set("status", "review").
-    Execute(ctx)
-
-// Bad: Don't use ForceUpdateAll() without strong justification
-eng.Update("User").
-    Set("active", true).
-    ForceUpdateAll(). // Affects ALL users!
+    Debug().
     Execute(ctx)
 ```
 
-### Check Affected Rows
-
-```go
-result, err := eng.Update("User").
-    Filter("id", "eq", userID).
-    Set("name", "Ana").
-    Execute(ctx)
-
-if err != nil {
-    return err
-}
-
-if result.Affected == 0 {
-    return fmt.Errorf("user not found: %s", userID)
-}
-
-if result.Affected > 1 {
-    log.Printf("Warning: Updated %d users (expected 1)", result.Affected)
-}
+```
+[SQL] UPDATE User
+UPDATE "users" SET "name" = $1 WHERE "id" = $2 RETURNING *
+[VALUES] [Ana 550e8400-e29b-41d4-a716-446655440000]
 ```
 
-### Validate Before Update
+The values are printed as they are. Do not enable debug output where logs may hold sensitive data.
+
+## Patterns
+
+### Partial updates
 
 ```go
-func (r *UserRepository) UpdateEmail(ctx context.Context, id, email string) error {
-    // Validate email format
-    if !isValidEmail(email) {
-        return fmt.Errorf("invalid email format")
-    }
-    
-    // Perform update
-    result, err := r.eng.Update("User").
-        Filter("id", "eq", id).
-        Set("email", email).
-        Execute(ctx)
-    
-    if err != nil {
-        return err
-    }
-    
-    if result.Affected == 0 {
-        return fmt.Errorf("user not found")
-    }
-    
-    return nil
-}
-```
-
-### Use Transactions for Multiple Updates
-
-```go
-// Coming in v1.1
-tx, err := eng.BeginTransaction(ctx)
-if err != nil {
-    return err
-}
-defer tx.Rollback()
-
-// Update user
-_, err = tx.Update("User").
-    Filter("id", "eq", userID).
-    Set("status", "premium").
-    Execute(ctx)
-if err != nil {
-    return err
-}
-
-// Update all user's posts
-_, err = tx.Update("Post").
-    Filter("author_id", "eq", userID).
-    Set("premium_content", true).
-    Execute(ctx)
-if err != nil {
-    return err
-}
-
-tx.Commit()
-```
-
-## Common Patterns
-
-### Toggle Boolean Fields
-
-```go
-// Publish a post
-eng.Update("Post").
-    Filter("id", "eq", postID).
-    Set("published", true).
-    Execute(ctx)
-
-// Unpublish a post
-eng.Update("Post").
-    Filter("id", "eq", postID).
-    Set("published", false).
-    Execute(ctx)
-```
-
-### Bulk Status Updates
-
-```go
-// Mark all old drafts as archived
-result, err := eng.Update("Post").
-    Filter("status", "eq", "draft").
-    Filter("created_at", "lt", "2023-01-01").
-    Set("status", "archived").
-    Execute(ctx)
-
-fmt.Printf("Archived %d old drafts\n", result.Affected)
-```
-
-### Partial Updates
-
-```go
-// Update only if fields are provided
 func (r *UserRepository) UpdateProfile(ctx context.Context, id string, name, email *string) error {
     update := r.eng.Update("User").Filter("id", "eq", id)
-    
+
     if name != nil {
         update = update.Set("name", *name)
     }
-    
     if email != nil {
         update = update.Set("email", *email)
     }
-    
+
     result, err := update.Execute(ctx)
     if err != nil {
         return err
     }
-    
     if result.Affected == 0 {
         return fmt.Errorf("user not found")
     }
-    
     return nil
 }
 ```
 
-## HTTP Handler Example
+If both are `nil`, the update has no `Set` and fails with a `SafetyError`.
+
+### Check the count
 
 ```go
-import "net/http"
-
-func updateUserHandler(w http.ResponseWriter, r *http.Request) {
-    userID := r.URL.Query().Get("id")
-    
-    var req struct {
-        Name  string `json:"name"`
-        Email string `json:"email"`
-    }
-    
-    if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-        http.Error(w, "Invalid request", http.StatusBadRequest)
-        return
-    }
-    
-    result, err := eng.Update("User").
-        Filter("id", "eq", userID).
-        Set("name", req.Name).
-        Set("email", req.Email).
-        Execute(r.Context())
-    
-    if err != nil {
-        var uniqueErr *engine.UniqueConstraintError
-        if errors.As(err, &uniqueErr) {
-            http.Error(w, "Email already in use", http.StatusConflict)
-            return
-        }
-        
-        http.Error(w, "Internal server error", http.StatusInternalServerError)
-        return
-    }
-    
-    if result.Affected == 0 {
-        http.Error(w, "User not found", http.StatusNotFound)
-        return
-    }
-    
-    w.WriteHeader(http.StatusOK)
-    json.NewEncoder(w).Encode(map[string]int{"affected": result.Affected})
+if result.Affected > 1 {
+    log.Printf("warning: updated %d users, expected 1", result.Affected)
 }
 ```
 
-## Next Steps
+<Warning>
+  ChameleonDB does not expose transactions yet. Several updates in a row are independent statements. If you need atomicity across statements, run them through your own `pgx` transaction.
+</Warning>
+
+## Best practices
+
+- Filter by primary key whenever you mean to touch one record.
+- Check `Affected` and treat 0 as "not found" where that matters.
+- A filter does not guarantee a small match: `Filter("status", "neq", "x")` may match every row. Try it with `.Debug()` first.
+- Validate formats in your application before calling the engine.
+
+## Next steps
 
 <CardGroup cols={2}>
-  <Card title="Delete Operations" icon="trash" href="/mutations/delete">
-    Remove records safely with WHERE clause requirements
+  <Card title="Delete" icon="trash" href="/mutations/delete">
+    Remove records
   </Card>
   <Card title="Safety Guards" icon="shield" href="/mutations/safety">
-    Learn about ChameleonDB's mutation safety features
+    What is validated
   </Card>
-  <Card title="Insert Operations" icon="plus" href="/mutations/insert">
-    Create new records with validation
+  <Card title="Insert" icon="plus" href="/mutations/insert">
+    Create records
   </Card>
-  <Card title="Error Handling" icon="triangle-exclamation" href="/api/error-handling">
-    Complete error handling reference
+  <Card title="Error handling" icon="triangle-exclamation" href="/api/error-handling">
+    Error reference
   </Card>
 </CardGroup>

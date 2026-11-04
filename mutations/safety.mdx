@@ -1,503 +1,174 @@
 ---
 title: Safety Guards
-description: Built-in protections that prevent dangerous mutations
+description: Validation and protections built into ChameleonDB mutations
 ---
 
 ## Overview
 
-ChameleonDB includes multiple layers of safety guards to prevent accidental data loss or corruption. These protections are built into the mutation system and cannot be disabled without explicit confirmation.
+Insert, update and delete operations are validated before any SQL is sent. Some checks run in Go, others are left to PostgreSQL. This page lists what each layer checks, so you know what the library guarantees and what it does not.
 
-## WHERE Clause Requirement
+## WHERE clause requirement
 
-The most important safety guard: **all updates and deletes require a WHERE clause**.
-
-### The Problem
-
-In traditional databases, forgetting a WHERE clause can be catastrophic:
-
-```sql
--- Intended to update one user
-UPDATE users SET role = 'admin' WHERE id = '...';
-
--- Accidentally ran this instead (missing WHERE)
-UPDATE users SET role = 'admin';
--- ❌ ALL users are now admins!
-```
-
-### ChameleonDB's Solution
-
-ChameleonDB prevents this at the API level:
+**Updates and deletes without a filter are blocked.** The check runs before SQL is generated.
 
 ```go
-// This will FAIL with SafetyError
-db.Update("User").
+// Fails: no Filter()
+_, err := eng.Update("User").
     Set("role", "admin").
     Execute(ctx)
+// SafetyError: UPDATE requires a WHERE clause
 
-// Error: SafetyError: UPDATE requires a WHERE clause
-//        Suggestion: Use Filter() or ForceUpdateAll()
+_, err = eng.Delete("User").Execute(ctx)
+// SafetyError: DELETE without WHERE is blocked
 ```
 
-<Warning>
-The WHERE clause requirement applies to both **Update** and **Delete** operations. This is enforced before any SQL is generated.
-</Warning>
-
-### Safe Approach
-
-Always use `.Filter()` to specify which records to modify:
-
 ```go
-// Good: Explicit filter
-db.Update("User").
+// Works: explicit filter
+eng.Update("User").
     Filter("id", "eq", userID).
     Set("role", "admin").
     Execute(ctx)
-
-// Good: Multiple filters for bulk operations
-db.Update("Post").
-    Filter("author_id", "eq", authorID).
-    Filter("published", "eq", false).
-    Set("status", "draft").
-    Execute(ctx)
-```
-
-### Intentional Full-Table Operations
-
-If you genuinely need to update/delete all records, use the explicit bypass:
-
-```go
-// Update all records (requires explicit confirmation)
-db.Update("User").
-    Set("notification_enabled", true).
-    ForceUpdateAll(). // Explicit bypass
-    Execute(ctx)
-
-// Delete all records (requires explicit confirmation)
-db.Delete("TempSession").
-    ForceDeleteAll(). // Explicit bypass
-    Execute(ctx)
 ```
 
 <Warning>
-**Use with extreme caution**: `ForceUpdateAll()` and `ForceDeleteAll()` bypass the safety guard and affect **every record** in the table.
-
-Recommended safeguards:
-- Only use in development/test environments
-- Require code review before production use
-- Always have recent backups
-- Test on a copy of production data first
-- Document why the full-table operation is necessary
+  The error message suggests `ForceUpdateAll()` and `ForceDeleteAll()`. **These methods do not exist** in the current API, so there is currently no way to run an unfiltered update or delete through ChameleonDB. This is a known documentation bug in the message itself. If you need a full-table operation, run SQL directly against PostgreSQL.
 </Warning>
 
-## Three-Stage Validation Pipeline
+Filters are combined with `AND`. Filtering on a field that is not in the entity returns an `UnknownFieldError` before reaching the database.
 
-Every mutation goes through three validation stages before execution:
+<Note>
+  A filter does not make an update safe by itself. `Filter("status", "neq", "x")` can still match every row. Check `result.Affected` and test with `.Debug()`.
+</Note>
 
-### Stage 1: Schema Validation
+## What is validated, and where
 
-Verifies the operation against your schema definition:
+### In Go (before the database)
 
-```go
-// Schema validation catches:
-// - Non-existent entities
-// - Non-existent fields
-// - Type mismatches
-// - Invalid field references
+| Check | Applies to | Error |
+|-------|-----------|-------|
+| Entity exists | all | `UnknownEntityError` |
+| Field exists | insert, update, filters | `UnknownFieldError` |
+| `uuid` fields hold a valid UUID string | insert, update | `FieldFormatError` |
+| `string` fields hold a Go `string` | insert, update | `TypeMismatchError` |
+| Fields whose name contains `email` look like an email | insert | `FieldFormatError` |
+| Non-nullable fields are not `nil` | insert, update | `NotNullError` |
+| Required fields are present (not nullable, no default, not primary key) | insert | `NotNullError` |
+| Primary key is not updated | update | `ConstraintError` |
+| At least one `Set()` | update | `SafetyError` |
+| At least one `Filter()` | update, delete | `SafetyError` |
+| Filter operator is supported | update, delete | `unsupported filter operator` |
 
-db.Insert("User").
-    Set("id", uuid.New().String()).
-    Set("email", 12345). // Wrong type!
-    Execute(ctx)
+<Warning>
+  The Go checks cover `uuid` and `string` types only. Other types (`int`, `decimal`, `bool`, `timestamp`, ...) are not validated in Go; a wrong value reaches PostgreSQL, which rejects it with its own error.
+</Warning>
 
-// Error: Type mismatch: field 'email' expects string, got int
-```
+<Note>
+  The email check is by field **name**: any field whose name contains `email` (case-insensitive) must match a basic `a@b.c` pattern. This is a convention of the validator, not something declared in the schema.
+</Note>
 
-**What it checks:**
-- Entity exists in schema
-- All fields are defined
-- Field types match schema
-- Required fields are present
+### In PostgreSQL
 
-### Stage 2: Constraint Validation
+Integrity rules are left to the database, and the error is mapped to a typed error:
 
-Enforces logical constraints before hitting the database:
+| Rule | Error |
+|------|-------|
+| `UNIQUE` | `UniqueConstraintError` |
+| Foreign key (parent missing on insert/update, or children exist on delete) | `ForeignKeyError` |
+| `NOT NULL` | `NotNullError` |
+| `CHECK` | `ConstraintError` |
 
-```go
-// Constraint validation catches:
-// - Missing required fields
-// - NULL values in NOT NULL fields
-// - Invalid filter operators
-// - Type coercion issues
+Other PostgreSQL errors are returned wrapped, without a typed mapping.
 
-db.Insert("User").
-    Set("id", uuid.New().String()).
-    Set("email", "ana@mail.com").
-    // Missing required 'name' field
-    Execute(ctx)
+## Filter operators
 
-// Error: NotNullError: Field 'name' cannot be null
-//        Schema requires this field
-//        Suggestion: Provide a value for 'name'
-```
+Mutation filters accept:
 
-**What it checks:**
-- NOT NULL constraints
-- Required field presence
-- WHERE clause requirement (for updates/deletes)
-- Valid filter operators
+| Operator | SQL |
+|----------|-----|
+| `eq` | `=` |
+| `neq`, `ne` | `!=` |
+| `gt`, `gte`, `lt`, `lte` | `>`, `>=`, `<`, `<=` |
+| `like`, `ilike` | `LIKE`, `ILIKE` |
 
-### Stage 3: Database Validation
+Details that matter:
 
-Final enforcement at the database level:
+- Values are bound as parameters (`$1`, `$2`, ...), never written into the SQL text. Table and column names are validated against the schema and quoted.
+- In mutations, `like` and `ilike` use **the pattern you pass**, so you add `%` yourself. This differs from the query builder, where `like` means "contains" and wildcards are escaped.
+- There is no `IS NULL` filter: `Filter("deleted_at", "eq", nil)` becomes `deleted_at = NULL`, which never matches in SQL.
+- A filter is keyed by field and operator. Calling `Filter("age", "gt", 18)` twice keeps only the last value; two different operators on the same field are both kept.
+- Filtering by a Go `time.Time` is not supported yet; pass a string.
 
-```go
-// Database validation catches:
-// - UNIQUE constraint violations
-// - Foreign key violations
-// - Database-specific constraints
-// - Check constraints
-
-db.Insert("User").
-    Set("id", uuid.New().String()).
-    Set("email", "ana@mail.com"). // Email already exists
-    Set("name", "Ana").
-    Execute(ctx)
-
-// Error: UniqueConstraintError: Field 'email' must be unique
-//        Value: ana@mail.com already exists
-//        Suggestion: Use a different value or update the existing record
-```
-
-**What it checks:**
-- UNIQUE constraints
-- Foreign key references
-- Check constraints
-- Database triggers
-
-## Error Hierarchy
-
-ChameleonDB provides typed errors for precise error handling:
+## Typed errors
 
 ```go
 import "errors"
 
-result, err := db.Insert("User").
-    Set("id", uuid.New().String()).
+_, err := eng.Insert("User").
     Set("email", "ana@mail.com").
     Set("name", "Ana").
     Execute(ctx)
 
-if err != nil {
-    // Check specific error types
-    var uniqueErr *engine.UniqueConstraintError
-    if errors.As(err, &uniqueErr) {
-        // Handle duplicate entry
-        log.Printf("Duplicate email: %s", uniqueErr.Value)
-        return fmt.Errorf("email already registered")
-    }
-    
-    var fkErr *engine.ForeignKeyError
-    if errors.As(err, &fkErr) {
-        // Handle invalid reference
-        log.Printf("Invalid FK: %s", fkErr.Field)
-        return fmt.Errorf("invalid reference")
-    }
-    
-    var notNullErr *engine.NotNullError
-    if errors.As(err, &notNullErr) {
-        // Handle missing required field
-        log.Printf("Missing field: %s", notNullErr.Field)
-        return fmt.Errorf("missing required field")
-    }
-    
-    var safetyErr *engine.SafetyError
-    if errors.As(err, &safetyErr) {
-        // Handle missing WHERE clause
-        log.Printf("Safety violation: %s", safetyErr.Message)
-        return fmt.Errorf("operation requires filter")
-    }
-    
-    // Unknown error
+var uniqueErr *engine.UniqueConstraintError
+var fkErr *engine.ForeignKeyError
+var notNullErr *engine.NotNullError
+var safetyErr *engine.SafetyError
+
+switch {
+case errors.As(err, &uniqueErr):
+    // duplicate value in a unique field
+case errors.As(err, &fkErr):
+    // referenced parent does not exist
+case errors.As(err, &notNullErr):
+    // missing or null required field
+case errors.As(err, &safetyErr):
+    // missing WHERE or SET
+case err != nil:
     return fmt.Errorf("operation failed: %w", err)
 }
 ```
 
-### Error Types
+Other error types: `TypeMismatchError`, `FieldFormatError`, `UnknownEntityError`, `UnknownFieldError`, `ConstraintError`. (`ForeignKeyConstraintError` is defined but the database error mapper does not produce it today; foreign key violations arrive as `ForeignKeyError`, on delete too.) Mutation errors implement a `Code()` method (for example `UNIQUE_CONSTRAINT_VIOLATION`, `SAFETY_VIOLATION`) and `engine.IsMutationError(err)`.
 
-| Error Type | When It Occurs | HTTP Status |
-|------------|----------------|-------------|
-| `SafetyError` | Missing WHERE clause in update/delete | 400 Bad Request |
-| `UniqueConstraintError` | Duplicate value in unique field | 409 Conflict |
-| `ForeignKeyError` | Invalid reference to parent record | 400 Bad Request |
-| `NotNullError` | NULL value in required field | 400 Bad Request |
-| `TypeMismatchError` | Wrong data type for field | 400 Bad Request |
-| `EntityNotFoundError` | Unknown entity in schema | 400 Bad Request |
-| `FieldNotFoundError` | Unknown field in entity | 400 Bad Request |
+### Suggested HTTP mapping
 
-## HTTP Error Mapping
+This is a suggestion for web apps, not behavior of the library:
 
-Recommended pattern for web applications:
+| Error | Status |
+|-------|--------|
+| `SafetyError`, `NotNullError`, `FieldFormatError`, `TypeMismatchError`, unknown entity or field | 400 |
+| `ForeignKeyError` | 400 or 422 |
+| `UniqueConstraintError` | 409 |
+| `ForeignKeyError` on delete (children exist) | 409 |
 
-```go
-import "net/http"
+## Practical habits
 
-func mapMutationError(err error) (status int, message string) {
-    var uniqueErr *engine.UniqueConstraintError
-    if errors.As(err, &uniqueErr) {
-        return http.StatusConflict, uniqueErr.Error()
-    }
-    
-    var fkErr *engine.ForeignKeyError
-    if errors.As(err, &fkErr) {
-        return http.StatusBadRequest, fkErr.Error()
-    }
-    
-    var notNullErr *engine.NotNullError
-    if errors.As(err, &notNullErr) {
-        return http.StatusBadRequest, notNullErr.Error()
-    }
-    
-    var safetyErr *engine.SafetyError
-    if errors.As(err, &safetyErr) {
-        return http.StatusBadRequest, safetyErr.Error()
-    }
-    
-    // Generic error
-    return http.StatusInternalServerError, "Internal server error"
-}
+1. **Validate input in your application** (formats, lengths) before calling the engine. The built-in checks are intentionally narrow.
+2. **Check `Affected`**. A filter that matches nothing is not an error.
+3. **Use `.Debug()` while developing.** It prints the SQL and the values, so do not enable it where logs contain sensitive data.
+4. **Take backups** before bulk updates or deletes.
+5. **Wrap multi-step changes carefully.** ChameleonDB does not expose transactions yet, so each mutation is its own statement.
 
-// Usage in handler
-func createUserHandler(w http.ResponseWriter, r *http.Request) {
-    result, err := repo.Create(r.Context(), email, name)
-    if err != nil {
-        status, message := mapMutationError(err)
-        http.Error(w, message, status)
-        return
-    }
-    
-    w.WriteHeader(http.StatusCreated)
-    json.NewEncoder(w).Encode(result)
-}
-```
+## Pre-flight checklist
 
-## Validation Best Practices
+- The engine was created with `engine.NewEngine()` and connected with `eng.Connect(ctx, cfg)`
+- The mutation package is imported: `_ "github.com/chameleon-db/chameleondb/chameleon/pkg/engine/mutation"`
+- Updates and deletes have the filter you intend, and you know the expected affected count
+- You tested the statement with `.Debug()` against a non-production database
+- Errors are handled by type
 
-### 1. Validate Early
-
-Validate input before attempting mutations:
-
-```go
-func (r *UserRepository) Create(ctx context.Context, email, name string) error {
-    // Validate email format
-    if !isValidEmail(email) {
-        return fmt.Errorf("invalid email format")
-    }
-    
-    // Validate name length
-    if len(name) < 2 {
-        return fmt.Errorf("name too short (minimum 2 characters)")
-    }
-    
-    if len(name) > 100 {
-        return fmt.Errorf("name too long (maximum 100 characters)")
-    }
-    
-    // Perform insert
-    _, err := r.eng.Insert("User").
-        Set("id", uuid.New().String()).
-        Set("email", email).
-        Set("name", name).
-        Execute(ctx)
-    
-    return err
-}
-```
-
-### 2. Use Typed Errors
-
-Provide meaningful error messages to users:
-
-```go
-func (r *UserRepository) Create(ctx context.Context, email, name string) error {
-    result, err := r.eng.Insert("User").
-        Set("id", uuid.New().String()).
-        Set("email", email).
-        Set("name", name).
-        Execute(ctx)
-    
-    if err != nil {
-        var uniqueErr *engine.UniqueConstraintError
-        if errors.As(err, &uniqueErr) {
-            if uniqueErr.Field == "email" {
-                return fmt.Errorf("email %s is already registered", email)
-            }
-        }
-        return fmt.Errorf("failed to create user: %w", err)
-    }
-    
-    return nil
-}
-```
-
-### 3. Check Affected Count
-
-Verify operations affected the expected number of records:
-
-```go
-func (r *UserRepository) UpdateEmail(ctx context.Context, id, email string) error {
-    result, err := r.eng.Update("User").
-        Filter("id", "eq", id).
-        Set("email", email).
-        Execute(ctx)
-    
-    if err != nil {
-        return err
-    }
-    
-    // Verify exactly one record was updated
-    if result.Affected == 0 {
-        return fmt.Errorf("user not found: %s", id)
-    }
-    
-    if result.Affected > 1 {
-        log.Printf("Warning: Updated %d users (expected 1)", result.Affected)
-    }
-    
-    return nil
-}
-```
-
-### 4. Use Debug Mode During Development
-
-Enable debug mode to see generated SQL:
-
-```go
-result, err := eng.Update("User").
-    Filter("id", "eq", userID).
-    Set("name", "Ana").
-    Debug(). // Shows SQL and arguments
-    Execute(ctx)
-
-// Output:
-// [SQL] Update User
-// UPDATE users SET name = $1 WHERE id = $2
-// [ARGS] [Ana, 550e8400-e29b-41d4-a716-446655440000]
-```
-
-## Pre-Flight Checklist
-
-Before running mutations, verify:
-
-### For Development
-
-- [ ] Engine created with `engine.NewEngine()`
-- [ ] Mutation package imported: `_ "github.com/chameleon-db/chameleondb/chameleon/pkg/engine/mutation"`
-- [ ] Connected to database with `eng.Connect(ctx, cfg)`
-- [ ] Database connection verified with `eng.Ping(ctx)`
-- [ ] Schema loaded successfully
-- [ ] Debug mode enabled for diagnostics
-
-### For Updates/Deletes
-
-- [ ] `.Filter()` clause is present
-- [ ] Filter targets correct records
-- [ ] Expected affected count is known
-- [ ] Tested with `.Debug()` first
-- [ ] Foreign key relationships understood
-
-### For Production
-
-- [ ] Input validation implemented
-- [ ] Error handling covers all typed errors
-- [ ] HTTP status codes mapped correctly
-- [ ] User-friendly error messages provided
-- [ ] Logging includes context (user ID, operation, etc.)
-- [ ] Backups are current
-- [ ] Rollback plan exists
-
-## Common Safety Violations
-
-### Missing WHERE Clause
-
-```go
-// ❌ WRONG: No filter
-db.Update("User").Set("active", true).Execute(ctx)
-
-// ✅ CORRECT: Specific filter
-db.Update("User").
-    Filter("id", "eq", userID).
-    Set("active", true).
-    Execute(ctx)
-
-// ✅ CORRECT: Intentional full-table update
-db.Update("User").
-    Set("migrated", true).
-    ForceUpdateAll().
-    Execute(ctx)
-```
-
-### Type Mismatches
-
-```go
-// ❌ WRONG: Wrong type
-db.Insert("User").
-    Set("email", 12345). // email is string, not int
-    Execute(ctx)
-
-// ✅ CORRECT: Correct type
-db.Insert("User").
-    Set("email", "user@mail.com").
-    Execute(ctx)
-```
-
-### Missing Required Fields
-
-```go
-// ❌ WRONG: Missing required 'name'
-db.Insert("User").
-    Set("id", uuid.New().String()).
-    Set("email", "user@mail.com").
-    Execute(ctx)
-
-// ✅ CORRECT: All required fields
-db.Insert("User").
-    Set("id", uuid.New().String()).
-    Set("email", "user@mail.com").
-    Set("name", "User Name").
-    Execute(ctx)
-```
-
-### Invalid Foreign Keys
-
-```go
-// ❌ WRONG: Author doesn't exist
-db.Insert("Post").
-    Set("id", uuid.New().String()).
-    Set("title", "Post").
-    Set("author_id", "invalid-uuid").
-    Execute(ctx)
-
-// ✅ CORRECT: Valid author reference
-db.Insert("Post").
-    Set("id", uuid.New().String()).
-    Set("title", "Post").
-    Set("author_id", existingUserID).
-    Execute(ctx)
-```
-
-## Next Steps
+## Next steps
 
 <CardGroup cols={2}>
-  <Card title="Insert Operations" icon="plus" href="/mutations/insert">
-    Create new records with validation
+  <Card title="Insert" icon="plus" href="/mutations/insert">
+    Create records
   </Card>
-  <Card title="Update Operations" icon="pen" href="/mutations/update">
-    Safely modify existing records
+  <Card title="Update" icon="pen" href="/mutations/update">
+    Modify records
   </Card>
-  <Card title="Delete Operations" icon="trash" href="/mutations/delete">
-    Remove records with safety guards
+  <Card title="Delete" icon="trash" href="/mutations/delete">
+    Remove records
   </Card>
-  <Card title="Error Handling" icon="triangle-exclamation" href="/api/error-handling">
-    Complete error handling reference
+  <Card title="Error handling" icon="triangle-exclamation" href="/api/error-handling">
+    Error reference
   </Card>
 </CardGroup>

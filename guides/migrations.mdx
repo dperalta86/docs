@@ -1,380 +1,254 @@
 ---
 title: Migration Workflow
-description: Complete guide to ChameleonDB's migration system with Schema Vault integration
+description: How ChameleonDB generates and applies migrations, and records them in the Schema Vault
 ---
 
-ChameleonDB migrations are tightly integrated with the Schema Vault, providing automatic versioning, integrity verification, and a complete audit trail for every schema change.
+`chameleon migrate` loads your schema files, registers each change as a version in the [Schema Vault](/concepts/schema-vault), generates PostgreSQL DDL and optionally applies it.
 
-## Overview
+<Warning>
+  **Migrations are create-only today.** The generated script contains one `CREATE TABLE IF NOT EXISTS` per entity and nothing else: no `DROP`, no `ALTER`. It will not delete your data, and it will not change tables that already exist. A new column or a type change in your schema is **not** applied to an existing table; apply those changes yourself. Applying differences is planned work.
+</Warning>
 
-Unlike traditional migration tools, ChameleonDB:
-- Automatically registers schema versions on every migration
-- Verifies integrity before applying changes
-- Enforces mode restrictions (readonly blocks migrations)
-- Maintains an append-only audit trail
-- Enables migration recovery for failed attempts
+## What `migrate` does
 
-## Migration Commands
+- Merges all `.cham` files from `schema.paths` and validates the result
+- Registers a new schema version in the vault when the schema changed
+- Verifies vault integrity before it does anything else
+- Respects the integrity mode (`readonly` stops it once a version exists)
+- Generates the SQL and, with `--apply`, runs it
+- Records the result in the journal and `integrity.log`, and lets you retry a failed attempt
 
-### Check Migration Status
+It does **not** compare your schema with the live database.
 
-View the current state of your database and schema:
+## Commands
 
-```bash
-chameleon status
-```
-
-**Output:**
-```
-Schema:
-  Current version:  v001
-  Status:          ✓ Up to date
-
-Vault:
-  Versions:        1 registered
-  Integrity:       ✓ OK
-  Mode:            🔒 readonly (locked)
-```
-
-### Preview Changes
-
-Check what changes will be applied without executing them:
+### Preview
 
 ```bash
-chameleon migrate
+chameleon migrate              # same as --check
+chameleon migrate --dry-run    # print the SQL, do not apply
 ```
 
-This command:
-- Compares your `schema.cham` with the current database state
-- Shows a diff of detected changes
-- Does NOT apply migrations
+Both print the generated SQL and stop. They do not register a version and do not connect to the database. They do create the vault on first use and write the merged schema to `.chameleon/state/schema.merged.cham`.
 
-### Dry Run (View Generated SQL)
+```
+─────────────────────────────────────────────────
+Migration SQL:
+─────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS users (
+    id UUID PRIMARY KEY,
+    email VARCHAR NOT NULL UNIQUE,
+    name VARCHAR NOT NULL
+);
+─────────────────────────────────────────────────
 
-See the exact SQL that will be executed:
+ℹ Dry-run mode. Use --apply to execute migration.
+```
+
+Columns are ordered primary key first, then alphabetically, so the same schema always produces the same SQL.
+
+### Apply
+
+```bash
+export DATABASE_URL="postgresql://user:password@localhost:5432/mydb"
+chameleon migrate --apply
+```
+
+```
+ℹ Registering new schema version...
+✓ Registered as v001 (hash: 3f2a8b9c1d4e...)
+ℹ Connecting to database...
+✓ Connected to database
+ℹ Applying migration...
+✓ Migration applied successfully
+
+✓ Migration completed successfully!
+
+Summary:
+  Version:  v001
+  Hash:     3f2a8b9c1d4e5f60...
+  Duration: 42ms
+  Status:   applied
+```
+
+The first `--apply` creates the vault and registers `v001`.
+
+## Workflow
+
+<Steps>
+  <Step title="Edit the schema">
+    ```chameleon
+    entity User {
+        id: uuid primary default uuid(),
+        email: string unique,
+        name: string,
+        age: int nullable,
+    }
+    ```
+  </Step>
+
+  <Step title="Validate">
+    ```bash
+    chameleon validate schemas/example.cham
+    ```
+
+    This checks one file. `migrate` validates the merged schema as well.
+  </Step>
+
+  <Step title="Preview and read the SQL">
+    ```bash
+    chameleon migrate --dry-run
+    ```
+
+    Remember that the script only creates missing tables. If `users` already exists, adding `age` to the schema produces the same `CREATE TABLE IF NOT EXISTS`, which does nothing to the existing table.
+  </Step>
+
+  <Step title="Unlock if needed">
+    ```bash
+    chameleon config get mode
+    chameleon config set mode=standard     # asks for the mode password
+    ```
+
+    See [Managing Integrity Modes](/guides/mode-management).
+  </Step>
+
+  <Step title="Apply">
+    ```bash
+    chameleon migrate --apply
+    ```
+
+    A new version (`v002`, and so on) is registered **before** the SQL runs.
+  </Step>
+
+  <Step title="Check">
+    ```bash
+    chameleon verify
+    chameleon journal schema
+    ```
+  </Step>
+</Steps>
+
+## Changing existing tables
+
+Because `migrate` does not alter tables, apply changes to existing tables by hand:
+
+```sql
+ALTER TABLE users ADD COLUMN age INTEGER;
+```
+
+Then run `chameleon migrate --apply` so that the new schema is registered as a version.
+
+<Warning>
+  The vault records the version as `applied` when the script runs without error, even if it changed nothing because the tables already existed. The version history tracks your schema, not the state of the database. Keep your own record of manual DDL.
+</Warning>
+
+## Vault integration
+
+Every change registers an entry in `.chameleon/vault/` with a hash, a parent and the files that were merged:
+
+```
+.chameleon/vault/
+├── manifest.json
+├── mode.json
+├── mode_auth.json
+├── integrity.log
+├── versions/        # v001.json, v002.json ... (the merged schema text)
+└── hashes/          # v001.hash, v002.hash ...
+```
+
+View the history:
+
+```bash
+chameleon journal schema
+chameleon journal schema v002
+chameleon journal migrations
+```
+
+## Retry after a failure
+
+If the connection or the SQL fails, the version stays registered and the migration is recorded as `failed`. Run `chameleon migrate --apply` again without changing the schema:
+
+```
+⚠ Schema unchanged, but latest version v002 is not applied to database
+```
+
+It generates the SQL again and retries.
+
+## Integrity verification
+
+Every `migrate` first checks that each version's snapshot still matches its recorded hash. On a mismatch it stops:
+
+```
+✗ INTEGRITY VIOLATION DETECTED
+  ...
+Recovery options:
+   1. Run 'chameleon verify' for details
+   2. Check .chameleon/vault/integrity.log
+   3. Contact your DBA
+
+✗ Migration aborted for safety
+```
+
+This detects changes to the vault files; it does not prove who made them. See [Schema Vault](/concepts/schema-vault#what-the-vault-does-not-do).
+
+## Environment
+
+`DATABASE_URL` is read through `${DATABASE_URL}` in `.chameleon.yml`. Export it in your shell or CI environment. ChameleonDB does not load `.env` files by itself; use your shell, `direnv` or your CI to set it, and keep it out of version control.
+
+## Limits to know
+
+- **No backup.** `features.backup_on_migrate` is not implemented; `migrate --apply` prints a warning saying no backup was created. Back up with `pg_dump` yourself.
+- **Not wrapped in a transaction.** The script runs as one statement batch; do not assume atomic rollback.
+- **No rollback command.**
+- **Timeouts.** 30 seconds for the command, 10 seconds to connect.
+- **TLS is not enforced.** Set `sslmode` explicitly in remote connection strings.
+
+## Common issues
+
+### `readonly mode: schema locked`
+
+```bash
+chameleon config auth set-password     # first time only
+chameleon config set mode=standard
+```
+
+### `failed to connect to database`
+
+Check `DATABASE_URL`, that PostgreSQL is reachable and that the user can create tables.
+
+### `integrity check failed`
+
+Someone changed vault files, or a file is corrupted. Run `chameleon verify` and review `.chameleon/vault/integrity.log`. Restore the vault from version control or a backup.
+
+### `vault not initialized` (from `config`)
+
+The vault is created by the first `chameleon migrate`, not by `init`:
 
 ```bash
 chameleon migrate --dry-run
 ```
 
-**Output:**
-```
-📋 Migration Preview:
-─────────────────────────────────────────────────
-ALTER TABLE users ADD COLUMN age INTEGER;
-CREATE INDEX idx_users_age ON users(age);
-─────────────────────────────────────────────────
-
-💡 This is a dry run. Use --apply to execute.
-```
-
-### Apply Migration
-
-Apply the migration to your database:
-
-```bash
-chameleon migrate --apply
-```
-
-<Tip>
-The first time you run `chameleon migrate --apply`, it automatically initializes the Schema Vault and registers your schema as v001.
-</Tip>
-
-## Complete Migration Workflow
-
-<Steps>
-  <Step title="Modify Your Schema">
-    Edit your `schema.cham` file to add, remove, or modify entities and fields:
-
-    ```go
-    entity User {
-        id: uuid primary,
-        email: string unique,
-        name: string,
-        age: int,  // ← New field
-    }
-    ```
-  </Step>
-
-  <Step title="Validate Schema Syntax">
-    Ensure your schema is syntactically correct:
-
-    ```bash
-    chameleon validate
-    ```
-
-    **Output:**
-    ```
-    ✅ Schema validated successfully
-       Entities: 1 (User)
-       Fields: 4
-    ```
-  </Step>
-
-  <Step title="Preview Migration">
-    Check what changes will be applied:
-
-    ```bash
-    chameleon migrate --dry-run
-    ```
-
-    Review the generated SQL to ensure it matches your intentions.
-  </Step>
-
-  <Step title="Ensure Proper Mode">
-    Migrations are blocked in readonly mode. Upgrade if needed:
-
-    ```bash
-    # Check current mode
-    chameleon config get mode
-
-    # If readonly, upgrade to standard
-    chameleon config set mode=standard
-    🔐 Enter mode password: ****
-    ```
-
-    See [Mode Management](/guides/mode-management) for details.
-  </Step>
-
-  <Step title="Apply Migration">
-    Execute the migration:
-
-    ```bash
-    chameleon migrate --apply
-    ```
-
-    **Output:**
-    ```
-    🔍 Verifying schema integrity...
-       ✓ Current: v001 (3f2a8b9c...)
-       ✓ No tampering detected
-
-    📦 Registering new schema version...
-       ✓ Registered as v002 (hash: 7d4e1c2a...)
-       ✓ Parent: v001
-
-    📋 Applying migration...
-       ✓ ALTER TABLE users ADD COLUMN age INTEGER
-
-    ✅ Migration applied successfully
-    ✅ Schema v002 locked in vault
-    ```
-  </Step>
-
-  <Step title="Verify Integrity">
-    Confirm the migration was recorded correctly:
-
-    ```bash
-    chameleon verify
-    ```
-
-    **Output:**
-    ```
-    🔍 Verifying Schema Vault integrity...
-       ✓ v001: hash verified
-       ✓ v002: hash verified
-    ✅ All versions verified
-    ```
-  </Step>
-</Steps>
-
-## Schema Vault Integration
-
-Every migration creates an immutable version in the vault:
-
-### Vault Structure
-
-```
-.chameleon/vault/
-├── manifest.json       # Current version + history
-├── integrity.log       # Append-only audit trail
-├── versions/
-│   ├── v001.json      # Immutable snapshot
-│   └── v002.json
-└── hashes/
-    ├── v001.hash      # SHA256 verification
-    └── v002.hash
-```
-
-### Version History
-
-View all schema versions:
-
-```bash
-chameleon journal schema
-```
-
-**Output:**
-```
-📖 Schema Version History
-
-v002 (current) ✓
-├─ Hash: 7d4e1c2a...
-├─ Date: 2026-02-20 15:45:00
-├─ Author: dperalta
-├─ Changes: Added age field to User
-└─ Parent: v001
-
-v001
-├─ Hash: 3f2a8b9c...
-├─ Date: 2026-02-20 10:30:00
-├─ Author: dperalta
-├─ Changes: Initial schema
-└─ Parent: none
-```
-
-### Audit Trail
-
-View the complete integrity log:
-
-```bash
-cat .chameleon/vault/integrity.log
-```
-
-## Migration Recovery
-
-If a migration fails midway, ChameleonDB can retry automatically:
-
-```bash
-chameleon migrate --apply
-```
-
-**Output:**
-```
-⚠️  Incomplete migration detected (v002)
-🔄 Attempting recovery...
-✅ Migration completed successfully
-```
-
-## Environment Variables
-
-Set your database connection string:
-
-```bash
-export DATABASE_URL="postgresql://user:password@localhost:5432/mydb"
-```
-
-Alternatively, use a `.env` file:
-
-```bash .env
-DATABASE_URL=postgresql://user:password@localhost:5432/mydb
-```
-
-## Integrity Verification
-
-### Automatic Verification
-
-Every `chameleon migrate` command automatically:
-1. Verifies all schema hashes
-2. Detects tampering
-3. Aborts if integrity violation detected
-
-**Example (tampered vault):**
-```
-❌ INTEGRITY VIOLATION DETECTED
-   • v001.json: hash mismatch
-   🚨 Schema vault has been modified!
-   ❌ Migration aborted for safety
-```
-
-### Manual Verification
-
-Verify vault integrity anytime:
-
-```bash
-chameleon verify
-```
-
-## Common Issues
-
-### "readonly mode: schema modifications blocked"
-
-**Solution:** Upgrade mode to standard or higher:
-
-```bash
-chameleon config auth set-password  # First time only
-chameleon config set mode=standard
-```
-
-### "DATABASE_URL not set"
-
-**Solution:** Set environment variable:
-
-```bash
-export DATABASE_URL="postgresql://user:pass@host:5432/db"
-```
-
-### "integrity violation detected"
-
-**Solution:** Someone modified vault files. Check audit log:
-
-```bash
-cat .chameleon/vault/integrity.log
-```
-
-If changes were unauthorized, restore from backup.
-
-### "vault not initialized"
-
-**Solution:** Run init first:
-
-```bash
-chameleon init
-```
-
-## Best Practices
-
-<AccordionGroup>
-  <Accordion title="Always run dry-run first">
-    Preview SQL before applying to catch unexpected changes:
-    ```bash
-    chameleon migrate --dry-run
-    ```
-  </Accordion>
-
-  <Accordion title="Use readonly mode in production">
-    Lock schema changes in production environments:
-    ```bash
-    chameleon config set mode=readonly
-    ```
-  </Accordion>
-
-  <Accordion title="Review version history regularly">
-    Audit schema changes periodically:
-    ```bash
-    chameleon journal schema
-    ```
-  </Accordion>
-
-  <Accordion title="Backup vault before major changes">
-    Create snapshots before risky operations:
-    ```bash
-    cp -r .chameleon/vault .chameleon/vault.backup
-    ```
-  </Accordion>
-
-  <Accordion title="Set DATABASE_URL in .env">
-    Keep connection strings out of version control:
-    ```bash
-    # .env (add to .gitignore)
-    DATABASE_URL=postgresql://...
-    ```
-  </Accordion>
-</AccordionGroup>
-
-## Next Steps
+## Best practices
+
+- Read `--dry-run` before every `--apply`.
+- Keep `readonly` as the resting mode and unlock for the change.
+- Back up the database before manual DDL.
+- Commit the vault (except `mode_auth.json`) if you want a shared history.
+- Run `chameleon verify` in CI.
+
+## Next steps
 
 <CardGroup cols={2}>
   <Card title="Introspection" icon="database" href="/guides/introspection">
-    Generate schema from existing databases
+    Generate a draft schema from a database
   </Card>
-  <Card title="Mode Management" icon="shield" href="/guides/mode-management">
-    Control schema change permissions
+  <Card title="Mode management" icon="shield" href="/guides/mode-management">
+    Lock and unlock migrations
   </Card>
   <Card title="Debugging" icon="bug" href="/guides/debugging">
-    Troubleshoot migrations and queries
+    Troubleshooting
   </Card>
-  <Card title="Architecture" icon="diagram-project" href="/core-concepts/architecture">
-    Understand the Schema Vault system
+  <Card title="`chameleon migrate`" icon="terminal" href="/cli/migrate">
+    Command reference
   </Card>
 </CardGroup>
