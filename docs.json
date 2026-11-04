@@ -3,11 +3,17 @@
   "name": "ChameleonDB",
   "theme": "aspen",
   "colors": {
-    "primary": "#7C3AED",
-    "light": "#A78BFA",
-    "dark": "#5B21B6"
+    "primary": "#00D4AA",
+    "light": "#66E6CA",
+    "dark": "#009E80"
   },
   "navbar": {
+    "links": [
+      {
+        "label": "Website",
+        "href": "https://chameleondb.dev"
+      }
+    ],
     "primary": {
       "type": "github",
       "href": "https://github.com/chameleon-db/chameleondb"
