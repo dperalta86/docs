@@ -1,244 +1,141 @@
 ---
 title: Filter Operations
-description: Filter queries using comparison operators (eq, neq, gt, gte, lt, lte, like, in)
+description: Filter queries with comparison operators and relation paths
 ---
 
-Filter operations allow you to query entities based on specific conditions. ChameleonDB supports a rich set of comparison operators.
+`Filter(field, operator, value)` adds a condition to a query. Several `Filter()` calls are combined with `AND`.
 
-## Current API (v0.1)
+```go
+result, err := eng.Query("User").
+    Filter("email", "eq", "ana@mail.com").
+    Execute(ctx)
+```
+
+```sql
+SELECT "id", "email", "name", ...
+FROM "users"
+WHERE "email" = $1
+```
+
+The value travels as a bound parameter (`$1 = String("ana@mail.com")`), not inside the SQL text.
+
+## Operators
+
+| Operator | SQL | Example |
+|----------|-----|---------|
+| `eq` | `=` | `Filter("age", "eq", 25)` |
+| `neq` | `!=` | `Filter("status", "neq", "deleted")` |
+| `gt` | `>` | `Filter("age", "gt", 18)` |
+| `gte` | `>=` | `Filter("age", "gte", 18)` |
+| `lt` | `<` | `Filter("total", "lt", 100)` |
+| `lte` | `<=` | `Filter("total", "lte", 100)` |
+| `like` | `LIKE` (contains) | `Filter("name", "like", "ana")` |
+
+<Warning>
+  **`in` is not supported.** It is rejected with an unsupported-operator error. To match several values, run the query once per value, or filter in your application.
+</Warning>
+
+Values can be `string`, `int`, `int64`, `float64` or `bool`. Any other Go type is converted to its string form with `fmt`, so pass dates as strings and convert other types yourself.
 
 <Note>
-v0.1 uses string-based filters. The target API will use generated typed accessors for better type safety.
+  Float values are bound as `numeric`, so `Filter("total", "gt", 99.99)` compares exactly even against integer columns.
 </Note>
 
-**Current syntax:**
+## Multiple filters
+
 ```go
-db.Users().Filter("email", "eq", "ana@mail.com")
-```
-
-**Target API (with code generation):**
-```go
-db.Users().Filter(User.Email.Eq("ana@mail.com"))
-```
-
-## Filter by Equality
-
-Match records where a field equals a specific value:
-
-<CodeGroup>
-```go Go
-users, err := db.Users().
-    Filter("email", "eq", "ana@mail.com").
-    Execute()
-```
-
-```sql Generated SQL
-SELECT id, email, name, age, created_at
-FROM users
-WHERE email = 'ana@mail.com';
-```
-</CodeGroup>
-
-## Comparison Operators
-
-ChameleonDB supports these comparison operators:
-
-| Operator | Meaning | Example |
-|----------|---------|----------|
-| `eq` | Equal | `Filter("age", "eq", 25)` |
-| `neq` | Not equal | `Filter("status", "neq", "deleted")` |
-| `gt` | Greater than | `Filter("age", "gt", 18)` |
-| `gte` | Greater than or equal | `Filter("age", "gte", 18)` |
-| `lt` | Less than | `Filter("total", "lt", 100)` |
-| `lte` | Less than or equal | `Filter("total", "lte", 100)` |
-| `like` | Contains (pattern) | `Filter("name", "like", "ana")` |
-| `in` | In list | `Filter("status", "in", [...])` |
-
-## Greater Than or Equal
-
-<CodeGroup>
-```go Go
-users, err := db.Users().
-    Filter("age", "gte", 18).
-    Execute()
-```
-
-```sql Generated SQL
-SELECT id, email, name, age, created_at
-FROM users
-WHERE age >= 18;
-```
-</CodeGroup>
-
-## Multiple Filters (AND)
-
-Multiple `.Filter()` calls are combined with `AND`:
-
-<CodeGroup>
-```go Go
-users, err := db.Users().
+result, err := eng.Query("User").
     Filter("age", "gte", 18).
     Filter("age", "lte", 65).
-    Execute()
+    Execute(ctx)
 ```
 
-```sql Generated SQL
-SELECT id, email, name, age, created_at
-FROM users
-WHERE age >= 18 AND age <= 65;
-```
-</CodeGroup>
-
-<Tip>
-You can chain as many filters as needed. They will all be combined with `AND` logic.
-</Tip>
-
-## Like (Pattern Matching)
-
-Match strings using `like`. Wildcards (`%`) are added automatically:
-
-<CodeGroup>
-```go Go
-users, err := db.Users().
-    Filter("name", "like", "ana").
-    Execute()
+```sql
+WHERE "age" >= $1 AND "age" <= $2
 ```
 
-```sql Generated SQL
-SELECT id, email, name, age, created_at
-FROM users
-WHERE name LIKE '%ana%';
-```
-</CodeGroup>
+There is no `OR` in the Go builder.
 
-<Note>
-ChameleonDB automatically wraps the search term with `%` wildcards for convenient substring matching.
-</Note>
+## Like (contains)
 
-## In (Multiple Values)
-
-Match against a list of values:
-
-<CodeGroup>
-```go Go
-users, err := db.Users().
-    Filter("status", "in", []string{"active", "pending"}).
-    Execute()
-```
-
-```sql Generated SQL
-SELECT id, email, name, age, created_at
-FROM users
-WHERE status IN ('active', 'pending');
-```
-</CodeGroup>
-
-## Filter on Related Entity
-
-Filter the main entity based on a condition on a related entity:
-
-<CodeGroup>
-```go Go
-users, err := db.Users().
-    Filter("orders.total", "gt", 100).
-    Execute()
-```
-
-```sql Generated SQL
-SELECT DISTINCT users.id, users.email, users.name, users.age, users.created_at
-FROM users
-INNER JOIN orders ON orders.user_id = users.id
-WHERE orders.total > 100;
-```
-</CodeGroup>
-
-<Warning>
-**Important:** When filtering on a relation, ChameleonDB uses a JOIN automatically. `DISTINCT` is added to avoid duplicates when a user has multiple matching orders.
-</Warning>
-
-## Filter on Relation + Include
-
-You can filter on a relation and also include it. The filter affects **which users** are returned; the include loads **all their orders** (not just matching ones):
-
-<CodeGroup>
-```go Go
-users, err := db.Users().
-    Filter("orders.total", "gt", 100).
-    Include("orders").
-    Execute()
-```
-
-```sql Generated SQL
--- 1. Main query (filtered via JOIN)
-SELECT DISTINCT users.id, users.email, users.name, users.age, users.created_at
-FROM users
-INNER JOIN orders ON orders.user_id = users.id
-WHERE orders.total > 100;
-
--- 2. Eager load ALL orders for matched users
-SELECT id, total, status, created_at, user_id
-FROM orders
-WHERE user_id IN (...);
-```
-</CodeGroup>
-
-<Note>
-The filter determines **which users** match. The include loads **all related data** for those users, not just the filtered subset.
-</Note>
-
-## Not Equal
-
-<CodeGroup>
-```go Go
-users, err := db.Users().
-    Filter("status", "neq", "deleted").
-    Execute()
-```
-
-```sql Generated SQL
-SELECT id, email, name, age, created_at
-FROM users
-WHERE status != 'deleted';
-```
-</CodeGroup>
-
-## Less Than
-
-<CodeGroup>
-```go Go
-orders, err := db.Orders().
-    Filter("total", "lt", 100).
-    Execute()
-```
-
-```sql Generated SQL
-SELECT id, total, status, created_at, user_id
-FROM orders
-WHERE total < 100;
-```
-</CodeGroup>
-
-## Type Safety
-
-<Warning>
-Filters are validated against your schema. Type mismatches will be caught:
+`like` means **contains**. ChameleonDB adds the wildcards and escapes any `%`, `_` or `\` in your value, so they match literally:
 
 ```go
-// ❌ This will fail - age is an integer
-db.Users().Filter("age", "eq", "not a number")
-
-// ✅ Correct
-db.Users().Filter("age", "eq", 25)
+eng.Query("User").Filter("name", "like", "ana").Execute(ctx)
 ```
-</Warning>
 
-## What's Next?
+```sql
+WHERE "name" LIKE $1 ESCAPE '\'
+-- $1 = String("%ana%")
+```
+
+`like` only accepts string values.
+
+<Note>
+  This differs from `like` in mutations (update and delete), where the pattern you pass is used as is. See [Safety Guards](/mutations/safety#filter-operators).
+</Note>
+
+## Null values
+
+`Filter("age", "eq", nil)` generates `"age" = NULL`, which never matches in SQL. There is no `IS NULL` filter today. To find rows with a missing value, filter in your application or use a non-nullable field with a default.
+
+## Filter on a related entity
+
+A path of the form `relation.field` filters the main entity by a condition on a related one. The relation must be a **has-many** relation (declared with `via`):
+
+```go
+result, err := eng.Query("User").
+    Select("id", "name").
+    Filter("orders.total", "gt", 100).
+    Execute(ctx)
+```
+
+```sql
+SELECT DISTINCT "users"."id", "users"."name"
+FROM "users"
+INNER JOIN "orders" ON "orders"."user_id" = "users"."id"
+WHERE "orders"."total" > $1
+```
+
+`DISTINCT` avoids duplicates when a user has several matching orders.
+
+Constraints:
+
+- Only one level: `orders.total` works, `orders.items.price` is rejected
+- Filtering through a belongs-to relation (for example `Order` filtered by `user.name`) fails with a missing-foreign-key error
+- With `DISTINCT`, PostgreSQL needs every `OrderBy` field to appear in the select list; if you use `Select()` with a relation filter, include the fields you sort by
+
+## Relation filter plus include
+
+The filter picks **which users** match. `Include("orders")` then loads **all** orders for those users, not only the ones that matched:
+
+```go
+result, err := eng.Query("User").
+    Filter("orders.total", "gt", 100).
+    Include("orders").
+    Execute(ctx)
+```
+
+```sql
+-- main query: users that have at least one order over 100 (JOIN as above)
+
+-- eager query: every order of those users
+SELECT "id", "total", ...
+FROM "orders"
+WHERE "user_id" = ANY($1)
+```
+
+## What is validated
+
+The entity, the field or `relation.field` path and the operator are checked before SQL is generated. Value types are not checked; a wrong type is rejected by PostgreSQL.
+
+## What's next
 
 <CardGroup cols={2}>
   <Card title="Relations" icon="diagram-project" href="/queries/relations">
-    Learn about eager loading with Include()
+    Eager loading with `Include()`
   </Card>
-  <Card title="Advanced Queries" icon="wand-magic-sparkles" href="/queries/advanced">
-    OrderBy, Limit, Offset, and complex queries
+  <Card title="Advanced" icon="wand-magic-sparkles" href="/queries/advanced">
+    OrderBy, Limit and Offset
   </Card>
 </CardGroup>

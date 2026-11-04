@@ -1,56 +1,59 @@
 ---
 title: Query System Overview
-description: ChameleonDB's chainable query API with type validation and field projection
+description: ChameleonDB's chainable query builder, checked against your schema
 ---
 
-ChameleonDB queries are built using a **chainable API**. Every query targets an entity defined in your schema and is validated against it before execution.
+Queries are built with a **chainable API**. Every query targets an entity from your schema, and its entity, fields, relations and operators are checked against that schema before SQL is generated. Values are sent to PostgreSQL as bound parameters, never written into the SQL text.
 
-## Key Features
+## Key features
 
 <CardGroup cols={2}>
-  <Card title="Type-Safe" icon="shield-check">
-    All queries are validated against your schema before execution
+  <Card title="Schema-checked" icon="shield-check">
+    Unknown entities, fields, relations and operators are rejected before any SQL runs
   </Card>
   <Card title="Chainable API" icon="link">
-    Build complex queries by chaining methods together
+    Build a query by chaining methods
   </Card>
-  <Card title="Field Projection" icon="table-columns">
+  <Card title="Field projection" icon="table-columns">
     Select only the fields you need with `Select()`
   </Card>
-  <Card title="Eager Loading" icon="bolt">
-    Avoid N+1 queries with `Include()` for relations
+  <Card title="Eager loading" icon="bolt">
+    Avoid N+1 queries with `Include()`
   </Card>
 </CardGroup>
 
-## Basic Query Structure
-
-All queries follow this pattern:
+## Basic structure
 
 ```go
-result, err := db.Query("EntityName").
+result, err := eng.Query("EntityName").
+    Select("id", "name").
     Filter("field", "operator", value).
     Include("relation").
-    OrderBy("field", "direction").
+    OrderBy("field", "asc").
     Limit(10).
+    Offset(0).
     Execute(ctx)
 ```
 
-## Example Schema
+`eng` comes from `engine.NewEngine()` and a connected pool. See the [Query Builder](/query-builder) page for setup.
 
-All examples in this section use the following schema:
+## Example schema
 
-```go
+The examples in this section use:
+
+```chameleon
 entity User {
-    id: uuid primary,
+    id: uuid primary default uuid(),
     email: string unique,
     name: string,
     age: int nullable,
+    status: string default "active",
     created_at: timestamp default now(),
     orders: [Order] via user_id,
 }
 
 entity Order {
-    id: uuid primary,
+    id: uuid primary default uuid(),
     total: decimal,
     status: string,
     created_at: timestamp default now(),
@@ -60,7 +63,7 @@ entity Order {
 }
 
 entity OrderItem {
-    id: uuid primary,
+    id: uuid primary default uuid(),
     quantity: int,
     price: decimal,
     order_id: uuid,
@@ -68,89 +71,92 @@ entity OrderItem {
 }
 ```
 
-## Fetch All Records
+## Fetch all records
 
-Retrieve all instances from an entity:
+```go
+result, err := eng.Query("User").Execute(ctx)
 
-<CodeGroup>
-```go Go
-users, err := db.Users().Execute()
+for _, row := range result.Rows {
+    fmt.Println(row["name"])
+}
 ```
 
-```sql Generated SQL
-SELECT id, email, name, age, created_at
-FROM users;
-```
-</CodeGroup>
+`result.Rows` is a slice of `map[string]interface{}`. Without `Select()`, the query lists every field of the entity; the order of the columns in the SQL is not guaranteed, so read values by name.
 
-## Field Projection
+## Field projection
 
-Select only the fields you need:
-
-<CodeGroup>
-```go Go
-users := db.Query("User").
+```go
+result, err := eng.Query("User").
     Select("id", "name", "email").
     Execute(ctx)
 ```
 
-```sql Generated SQL
-SELECT id, name, email
-FROM users;
+```sql
+SELECT "id", "name", "email"
+FROM "users"
 ```
-</CodeGroup>
 
-<Tip>
-**Performance**: Field projection reduces memory usage and network transfer by only loading the data you need.
-</Tip>
+Fetching fewer columns reduces transfer and memory.
 
-## Query Validation
+<Note>
+  If you use `Include()`, keep `"id"` in `Select()`. The ids of the main rows are what the eager queries use to find related rows; without them, nothing is loaded.
+</Note>
 
-All queries are validated before execution. ChameleonDB will catch these errors at compile time:
+## What is checked
 
-| Error | Example |
-|-------|----------|
-| Unknown entity | `db.Products()` when `Product` is not in schema |
-| Unknown field | `.Filter("phone", ...)` when `phone` is not a field |
-| Invalid relation path | `.Include("orders.address")` when `address` doesn't exist |
-| Type mismatch | `.Filter("age", "eq", "not a number")` |
-| Missing order with pagination | `.Limit(10)` without `.OrderBy()` warns |
+Before SQL is generated:
 
-## Debug Mode
+| Check | Example that fails |
+|-------|--------------------|
+| Entity exists | `eng.Query("Products")` when only `Product` exists |
+| Fields in `Select`, `Filter` and `OrderBy` exist | `.Filter("phone", ...)` when `phone` is not a field |
+| Relations in `Include` and relation filters exist | `.Include("address")` when `address` is not a relation |
+| Filter paths are `field` or `relation.field` | `.Filter("orders.items.price", ...)` |
+| Operator is supported | `.Filter("age", "in", ...)` |
 
-See the generated SQL for any query:
+<Warning>
+  The query builder does **not** check value types. `Filter("age", "eq", "not a number")` generates valid SQL and fails when PostgreSQL rejects it. There is also no warning for `Limit()` without `OrderBy()`. Validate inputs in your application.
+</Warning>
 
-<CodeGroup>
-```go Go
-users := db.Query("User").
+## Limits
+
+- Filters combine with `AND` only; the Go builder has no `OR`
+- Relation filters and `Include` work with has-many relations (the ones declared with `via`)
+- No aggregations, group by, subqueries or transactions
+- `in` is not supported
+
+## Debug mode
+
+```go
+eng.Query("User").
     Select("id", "name").
     Filter("email", "like", "ana").
     Debug().
     Execute(ctx)
 ```
 
-```sql Output
-[SQL] Query User
-SELECT id, name FROM users WHERE email LIKE '%ana%'
-
-[TRACE] Query on User: 2.3ms, 3 rows
 ```
-</CodeGroup>
+[SQL]
+SELECT "id", "name"
+FROM "users"
+WHERE "email" LIKE $1 ESCAPE '\'
 
-<Note>
-**Debug mode** is useful during development to understand how your queries translate to SQL.
-</Note>
+[PARAMS]
+$1 = String("%ana%")
+```
 
-## What's Next?
+See [Debug Mode](/guides/debugging) for traces and for inspecting eager queries.
+
+## What's next
 
 <CardGroup cols={2}>
   <Card title="Filtering" icon="filter" href="/queries/filtering">
-    Learn about filter operators (eq, gt, like, in, etc.)
+    Operators and relation filters
   </Card>
   <Card title="Relations" icon="diagram-project" href="/queries/relations">
-    Master eager loading with Include()
+    Eager loading with `Include()`
   </Card>
-  <Card title="Advanced Queries" icon="wand-magic-sparkles" href="/queries/advanced">
-    OrderBy, Limit, Offset, and complex queries
+  <Card title="Advanced" icon="wand-magic-sparkles" href="/queries/advanced">
+    Ordering, pagination and combining features
   </Card>
 </CardGroup>

@@ -3,13 +3,13 @@ title: "Entities"
 description: "Define entities in ChameleonDB schemas"
 ---
 
-Entities are the core building blocks of ChameleonDB schemas. Each entity represents a domain concept with fields, relationships, and constraints.
+Entities are the building blocks of a ChameleonDB schema. Each entity becomes one PostgreSQL table and holds fields and relations.
 
-## Entity Definition
+## Entity definition
 
-An entity is defined using the `entity` keyword followed by a name and a block containing fields and relations:
+An entity is the `entity` keyword, a name and a block of members. **Every member ends with a comma**, including the last one:
 
-```go
+```chameleon
 entity User {
     id: uuid primary,
     email: string unique,
@@ -18,29 +18,54 @@ entity User {
 }
 ```
 
-## Naming Convention
+A member without its trailing comma is a parse error:
 
-Entity names should:
-- Start with an uppercase letter
-- Use PascalCase for multi-word names (e.g., `OrderItem`, `UserProfile`)
-- Be singular (e.g., `User` not `Users`)
-- Represent a clear domain concept
-
-```go
-entity User { ... }          // ✓ Good
-entity OrderItem { ... }     // ✓ Good
-entity user { ... }          // ✗ Bad - lowercase
-entity Users { ... }         // ✗ Bad - plural
+```text
+entity U {
+    id: uuid primary
+}
 ```
 
-## Entity Structure
+```text
+Parse error at line 3, column 1: Unexpected token: Token(37, "}"), expected one of: ",", "@cache", "@ml", "@olap", "@vector", "default", "nullable", "primary", "unique"
+```
 
-Entities contain three types of members:
+Line comments start with `//`.
 
-### 1. Fields
-Data attributes that define the entity's properties:
+## Naming
 
-```go
+The parser accepts any identifier that starts with a letter or `_` and continues with letters, digits or `_`. By convention:
+
+- Entity names are PascalCase and singular: `User`, `OrderItem`
+- Field and relation names are snake_case: `created_at`, `user_id`
+
+Some words are reserved by the language and cannot be field names, for example `default`.
+
+### Table names
+
+The table name is derived from the entity name: PascalCase becomes snake_case and an `s` is appended. There is no irregular-plural handling.
+
+| Entity | Table |
+|--------|-------|
+| `User` | `users` |
+| `OrderItem` | `order_items` |
+| `UserProfile` | `user_profiles` |
+| `Category` | `categorys` |
+| `users` | `userss` |
+
+<Warning>
+  Because the suffix is always `s`, `Category` becomes `categorys`. Name entities with this rule in mind, and keep them singular so you do not end up with `userss`. The same table name is used by migrations, queries and mutations.
+</Warning>
+
+## Members
+
+An entity contains **fields** and **relations**.
+
+### Fields
+
+Data columns, with a type, optional modifiers and an optional [annotation](/schema/annotations):
+
+```chameleon
 entity Product {
     id: uuid primary,
     name: string,
@@ -49,48 +74,42 @@ entity Product {
 }
 ```
 
-### 2. Relations
-Connections to other entities:
+### Relations
 
-```go
+Links to other entities. See [Relations](/schema/relations).
+
+```chameleon
 entity Order {
     id: uuid primary,
     user_id: uuid,
-    user: User,              // belongs-to relation
-    items: [OrderItem] via order_id,  // has-many relation
+    user: User,                       // belongs-to
+    items: [OrderItem] via order_id,  // has-many
 }
-```
 
-### 3. Backend Annotations
-Hints for storage optimization:
-
-```go
 entity User {
     id: uuid primary,
-    session: string @cache,
-    monthly_spent: decimal @olap,
+}
+
+entity OrderItem {
+    id: uuid primary,
+    order_id: uuid,
 }
 ```
 
-## Complete Example
+A relation declares a link; the foreign key itself is an ordinary field (`user_id`) that you declare yourself.
 
-Here's a complete multi-entity schema demonstrating all features:
+## Complete example
 
-```go
+```chameleon
 entity User {
     id: uuid primary,
     email: string unique,
     name: string,
     age: int nullable,
     created_at: timestamp default now(),
-    
-    // Relations
+
     orders: [Order] via user_id,
     posts: [Post] via author_id,
-    
-    // Backend optimizations
-    session: string @cache,
-    monthly_spent: decimal @olap,
 }
 
 entity Order {
@@ -99,8 +118,7 @@ entity Order {
     status: string,
     created_at: timestamp default now(),
     user_id: uuid,
-    
-    // Relations
+
     user: User,
     items: [OrderItem] via order_id,
 }
@@ -110,8 +128,7 @@ entity OrderItem {
     quantity: int,
     price: decimal,
     order_id: uuid,
-    
-    // Relations
+
     order: Order,
 }
 
@@ -121,76 +138,60 @@ entity Post {
     content: string,
     author_id: uuid,
     created_at: timestamp default now(),
-    
-    // Relations
+
     author: User,
 }
 ```
 
-## Entity Validation
+## What `validate` checks
 
-ChameleonDB validates entities at compile time:
+`chameleon validate` runs the type checker. For entities it reports:
 
-<Check>
-**Primary Key Required** - Each entity must have exactly one primary key field
-</Check>
+| Rule | Error message |
+|------|---------------|
+| Exactly one primary key | `Entity 'X' has no primary key` / `Entity 'X' has multiple primary keys: [...]` |
+| Unique entity names | `Duplicate entity name 'X' (first defined at #1, redefined at #2)` |
+| Unique field names | `Duplicate field name 'f' in entity 'X'` |
+| Relation targets exist | `Entity 'X' references unknown entity 'Y' in relation 'r'` |
+| Has-many `via` field exists in the target | `Relation 'r' in 'X' references foreign key 'fk', but 'Y' has no such field` |
+| No cycles of has-many relations | `Circular dependency detected: [...]` |
+| Annotation and default rules | See [Annotations](/schema/annotations) and [Constraints](/schema/constraints) |
 
-<Check>
-**Unique Names** - Entity names must be unique within a schema
-</Check>
+<Note>
+  The checker does not look at foreign key **types**, and it does not require belongs-to relations to have a matching field. See [Relations](/schema/relations#what-is-not-checked).
+</Note>
 
-<Check>
-**Valid References** - All relation targets must reference existing entities
-</Check>
+## Changing an entity later
 
-<Check>
-**No Circular Ownership** - Entities cannot form circular ownership dependencies
-</Check>
+Migrations only create missing tables (`CREATE TABLE IF NOT EXISTS`). Editing an entity that already has a table, whether adding a field, changing a type or adding a constraint, registers a new schema version but **does not alter the table**. Make those changes in PostgreSQL yourself. See [Migrations](/guides/migrations).
 
-## Best Practices
+## Best practices
 
 <Tip>
-**Keep entities focused** - Each entity should represent a single, clear domain concept
+  **Keep entities focused.** One entity, one domain concept.
 </Tip>
 
 <Tip>
-**Use meaningful names** - Entity names should be immediately understandable by domain experts
+  **Name the primary key `id`.** Has-many foreign keys always reference `id` on the parent table, and eager loading expects it. See [Constraints](/schema/constraints#primary-keys).
 </Tip>
 
 <Tip>
-**Group related fields** - Use comments to organize fields, relations, and annotations
+  **Group members with comments** (fields, relations, annotations) for readability.
 </Tip>
 
-```go
-entity Product {
-    // Identity
-    id: uuid primary,
-    name: string,
-    
-    // Pricing
-    price: decimal,
-    stock: int,
-    
-    // Backend optimizations
-    views_today: int @cache,
-    monthly_sales: decimal @olap,
-    embedding: vector(384) @vector,
-}
-```
-
-## Next Steps
+## Next steps
 
 <CardGroup cols={2}>
   <Card title="Field Types" icon="list" href="/schema/fields-types">
-    Learn about supported field types
+    Supported types and their PostgreSQL mapping
   </Card>
   <Card title="Relations" icon="link" href="/schema/relations">
-    Define relationships between entities
+    Connect entities
   </Card>
   <Card title="Constraints" icon="shield-check" href="/schema/constraints">
-    Add validation and constraints
+    Primary, unique, nullable and defaults
   </Card>
   <Card title="Annotations" icon="at" href="/schema/annotations">
-    Optimize with backend annotations
+    Backend hints
   </Card>
 </CardGroup>

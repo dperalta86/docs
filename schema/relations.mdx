@@ -3,185 +3,70 @@ title: "Relations"
 description: "Define relationships between entities in ChameleonDB"
 ---
 
-Relations define how entities are connected to each other. ChameleonDB supports one-to-many and many-to-one relationships using the `via` keyword.
+A relation links two entities. ChameleonDB has two kinds: **has-many** (with `via`) and **belongs-to**.
 
-## Relation Types
+## Has-many
 
-ChameleonDB supports two primary relation patterns:
+The parent declares a collection and names the foreign key field that lives in the **target** entity:
 
-### One-to-Many (Has Many)
-
-Defines a collection relationship where one entity has multiple related entities:
-
-```go
+```chameleon
 entity User {
     id: uuid primary,
-    orders: [Order] via user_id,  // User has many Orders
-}
-```
-
-**Syntax:**
-```go
-fieldName: [TargetEntity] via foreign_key_field
-```
-
-### Many-to-One (Belongs To)
-
-Defines a single relationship where one entity belongs to another:
-
-```go
-entity Order {
-    id: uuid primary,
-    user_id: uuid,
-    user: User,  // Order belongs to User
-}
-```
-
-**Syntax:**
-```go
-fieldName: TargetEntity
-```
-
-## The `via` Keyword
-
-The `via` keyword specifies the foreign key field in the related entity:
-
-```go
-entity User {
-    id: uuid primary,
-    email: string unique,
-    
-    // "via user_id" means: find Orders where order.user_id = user.id
     orders: [Order] via user_id,
 }
 
 entity Order {
     id: uuid primary,
-    total: decimal,
-    user_id: uuid,  // Foreign key field
-    
-    user: User,  // Reverse relation (no "via" needed)
+    user_id: uuid,
 }
 ```
 
-<Note>
-The `via` keyword is only used for **one-to-many** relations (arrays). Many-to-one relations infer the foreign key automatically.
-</Note>
+Syntax: `name: [Target] via foreign_key_field,`
 
-## Bidirectional Relations
+`via user_id` means "find the `Order` rows where `order.user_id = user.id`". This is the declaration that creates the database constraint:
 
-Most relationships are bidirectional - defined from both sides:
+```sql
+CREATE TABLE IF NOT EXISTS orders (
+    id UUID PRIMARY KEY,
+    user_id UUID NOT NULL,
+    FOREIGN KEY (user_id) REFERENCES users(id)
+);
+```
 
-```go
+The foreign key has no `ON DELETE` rule, so deleting a parent that still has children fails with a `ForeignKeyError`.
+
+## Belongs-to
+
+The child declares a single reference:
+
+```chameleon
+entity Order {
+    id: uuid primary,
+    user_id: uuid,
+    user: User,
+}
+
 entity User {
     id: uuid primary,
-    email: string unique,
-    
-    orders: [Order] via user_id,    // Forward: User → Orders
-    posts: [Post] via author_id,     // Forward: User → Posts
-}
-
-entity Order {
-    id: uuid primary,
-    total: decimal,
-    user_id: uuid,
-    
-    user: User,                      // Reverse: Order → User
-}
-
-entity Post {
-    id: uuid primary,
-    title: string,
-    author_id: uuid,
-    
-    author: User,                    // Reverse: Post → User
+    orders: [Order] via user_id,
 }
 ```
 
-## Foreign Key Fields
-
-Foreign key fields must be explicitly declared:
-
-```go
-entity Order {
-    id: uuid primary,
-    total: decimal,
-    user_id: uuid,     // ✓ Foreign key field explicitly declared
-    
-    user: User,        // Relation uses user_id implicitly
-}
-```
+Syntax: `name: Target,`
 
 <Warning>
-The foreign key field (`user_id`) must match the type of the target entity's primary key.
+  A belongs-to relation does not infer or create anything on its own. The `user_id` field must be declared by you, the checker does not verify that it exists, and **no foreign key constraint is generated from it**. Only a has-many on the other side produces the constraint. Declare both sides if you want the constraint.
 </Warning>
 
-## Nested Relations
+## Querying relations
 
-Relations can be traversed through multiple levels:
+Eager loading (`Include`) and filtering on a related field (`Filter("orders.total", ...)`) work from the **has-many** side. See [Relations in queries](/queries/relations).
 
-```go
+## Both sides
+
+```chameleon
 entity User {
     id: uuid primary,
-    email: string unique,
-    orders: [Order] via user_id,
-}
-
-entity Order {
-    id: uuid primary,
-    total: decimal,
-    user_id: uuid,
-    
-    user: User,
-    items: [OrderItem] via order_id,  // Nested relation
-}
-
-entity OrderItem {
-    id: uuid primary,
-    quantity: int,
-    price: decimal,
-    order_id: uuid,
-    
-    order: Order,
-}
-```
-
-**Querying nested relations:**
-```go
-// Eager load multiple levels
-users := db.Query("User").
-    Include("orders").
-    Include("orders.items").  // Nested include
-    Execute(ctx)
-```
-
-## Self-Referential Relations
-
-Entities can reference themselves:
-
-```go
-entity Category {
-    id: uuid primary,
-    name: string,
-    parent_id: uuid nullable,
-    
-    parent: Category nullable,
-    children: [Category] via parent_id,
-}
-```
-
-## Complete Example
-
-Here's a complete e-commerce schema demonstrating all relation patterns:
-
-```go
-entity User {
-    id: uuid primary,
-    email: string unique,
-    name: string,
-    created_at: timestamp default now(),
-    
-    // One-to-many relations
     orders: [Order] via user_id,
     posts: [Post] via author_id,
 }
@@ -189,198 +74,54 @@ entity User {
 entity Order {
     id: uuid primary,
     total: decimal,
-    status: string,
-    created_at: timestamp default now(),
     user_id: uuid,
-    
-    // Many-to-one relation
     user: User,
-    
-    // One-to-many relation
-    items: [OrderItem] via order_id,
-}
-
-entity OrderItem {
-    id: uuid primary,
-    quantity: int,
-    price: decimal,
-    order_id: uuid,
-    product_id: uuid,
-    
-    // Many-to-one relations
-    order: Order,
-    product: Product,
-}
-
-entity Product {
-    id: uuid primary,
-    name: string,
-    price: decimal,
-    stock: int,
-    
-    // One-to-many relation
-    order_items: [OrderItem] via product_id,
 }
 
 entity Post {
     id: uuid primary,
     title: string,
-    content: string,
     author_id: uuid,
-    created_at: timestamp default now(),
-    
-    // Many-to-one relation
     author: User,
 }
 ```
 
-## Relation Validation
+## Optional relations
 
-ChameleonDB validates relations at compile time:
+Relations accept no modifiers. Make the foreign key field nullable:
 
-<Check>
-**Target Exists** - The target entity must be defined in the schema
-</Check>
-
-<Check>
-**Foreign Key Type Match** - Foreign key type must match the target's primary key type
-</Check>
-
-<Check>
-**Foreign Key Exists** - For `via` relations, the foreign key field must exist in the target entity
-</Check>
-
-<Check>
-**No Circular Ownership** - Entities cannot form circular ownership dependencies
-</Check>
-
-## Querying Relations
-
-Relations are traversed using the query API:
-
-### Eager Loading
-
-Load related entities to avoid N+1 queries:
-
-```go
-// Load users with their orders
-users := db.Query("User").
-    Include("orders").  // Eager load orders
-    Execute(ctx)
-
-for _, user := range users {
-    fmt.Printf("%s has %d orders\n", user.Email, len(user.Orders))
-}
-```
-
-### Nested Includes
-
-```go
-// Load users → orders → items (3 levels)
-users := db.Query("User").
-    Include("orders").
-    Include("orders.items").  // Nested include
-    Execute(ctx)
-```
-
-### Multiple Relations
-
-```go
-// Load multiple relations
-users := db.Query("User").
-    Include("orders").
-    Include("posts").  // Load both orders and posts
-    Execute(ctx)
-```
-
-## Best Practices
-
-<Tip>
-**Name foreign keys consistently** - Use `{entity}_id` pattern (e.g., `user_id`, `order_id`)
-</Tip>
-
-<Tip>
-**Define bidirectional relations** - Define both sides for easier querying
-</Tip>
-
-<Tip>
-**Use meaningful relation names** - Choose names that reflect the domain relationship
-</Tip>
-
-```go
-// Good - clear domain meaning
+```chameleon
 entity Order {
-    user_id: uuid,
-    user: User,  // "user" is clear
+    id: uuid primary,
+    coupon_id: uuid nullable,
+    coupon: Coupon,
 }
 
-// Better - more specific
-entity Post {
-    author_id: uuid,
-    author: User,  // "author" is more specific than "user"
+entity Coupon {
+    id: uuid primary,
+    orders: [Order] via coupon_id,
 }
 ```
 
-<Tip>
-**Use eager loading** - Always use `Include()` to avoid N+1 query problems
-</Tip>
+`coupon: Coupon nullable,` is a parse error.
 
-## Common Patterns
+## Many-to-many
 
-### Parent-Child
+There is no direct many-to-many. Use a join entity, with a has-many from each side so that both foreign keys are created:
 
-```go
-entity Category {
+```chameleon
+entity Post {
+    id: uuid primary,
+    title: string,
+    post_tags: [PostTag] via post_id,
+}
+
+entity Tag {
     id: uuid primary,
     name: string,
-    parent_id: uuid nullable,
-    
-    parent: Category nullable,
-    children: [Category] via parent_id,
-}
-```
-
-### Author-Content
-
-```go
-entity User {
-    id: uuid primary,
-    posts: [Post] via author_id,
-    comments: [Comment] via author_id,
+    post_tags: [PostTag] via tag_id,
 }
 
-entity Post {
-    id: uuid primary,
-    author_id: uuid,
-    author: User,
-}
-```
-
-### Order-Line Items
-
-```go
-entity Order {
-    id: uuid primary,
-    items: [OrderItem] via order_id,
-}
-
-entity OrderItem {
-    id: uuid primary,
-    order_id: uuid,
-    order: Order,
-}
-```
-
-## Limitations
-
-<Warning>
-**Many-to-many not yet supported** - Use a join entity pattern instead:
-
-```go
-// Instead of direct many-to-many:
-// tags: [Tag] many_to_many  // ✗ Not supported
-
-// Use a join entity:
 entity PostTag {
     id: uuid primary,
     post_id: uuid,
@@ -389,15 +130,82 @@ entity PostTag {
     tag: Tag,
 }
 ```
-</Warning>
 
-## Next Steps
+This produces `post_tags` with `FOREIGN KEY (post_id) REFERENCES posts(id)` and `FOREIGN KEY (tag_id) REFERENCES tags(id)`.
+
+## What `validate` checks
+
+| Rule | Error |
+|------|-------|
+| Target entity exists | `Entity 'X' references unknown entity 'Y' in relation 'r'` |
+| `via` field exists in the target | `Relation 'r' in 'X' references foreign key 'fk', but 'Y' has no such field` |
+| No cycle of has-many relations | `Circular dependency detected: ["U", "O", "U"]` |
+
+### What is not checked
+
+- **Foreign key type.** A `via` field of type `string` pointing at a `uuid` primary key passes `validate`, and the migration then fails in PostgreSQL. Keep the types identical.
+- **The belongs-to field.** `author: User` without any `author_id` passes.
+- **The parent's primary key name.** The generated constraint references `parent_table(id)`.
+
+## Limitations
+
+### No self-referential relations
+
+A has-many that points at its own entity is reported as a cycle:
+
+```chameleon
+entity Category {
+    id: uuid primary,
+    parent_id: uuid nullable,
+    children: [Category] via parent_id,
+}
+```
+
+```
+Circular dependency detected: ["Category", "Category"]
+```
+
+The same happens when two entities have a has-many to each other. Cycles made only of belongs-to relations are allowed.
+
+For a tree, keep the foreign key as a plain field and resolve the hierarchy in your code:
+
+```chameleon
+entity Category {
+    id: uuid primary,
+    name: string,
+    parent_id: uuid nullable,
+}
+```
+
+Note that PostgreSQL gets no foreign key for `parent_id` in that case.
+
+### Other limits
+
+- No `ON DELETE` / `ON UPDATE` rules
+- No composite keys
+- Foreign keys always reference the `id` column
+
+## Best practices
+
+<Tip>
+  **Name foreign keys `{entity}_id`.**
+</Tip>
+
+<Tip>
+  **Declare both sides** so the database constraint exists and queries can start from either entity.
+</Tip>
+
+<Tip>
+  **Give the foreign key the same type as the parent's `id`**, since `validate` will not.
+</Tip>
+
+## Next steps
 
 <CardGroup cols={2}>
-  <Card title="Field Types" icon="list" href="/schema/fields-types">
-    Learn about field types for foreign keys
+  <Card title="Relations in queries" icon="diagram-project" href="/queries/relations">
+    Include and relation filters
   </Card>
   <Card title="Constraints" icon="shield-check" href="/schema/constraints">
-    Add validation to relations
+    Nullable foreign keys
   </Card>
 </CardGroup>
