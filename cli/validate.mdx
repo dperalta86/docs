@@ -32,7 +32,7 @@ Validate one schema file for syntax and semantic errors.
 <ParamField path="file" type="string" optional>
   Path to the schema file.
 
-  **Default:** `schema.cham` in the current directory. Projects created with `chameleon init` keep their schemas in `schemas/`, so pass the path explicitly, for example `chameleon validate schemas/example.cham`.
+  **Default:** `schema.cham` in the current directory if it exists. Otherwise, the schemas configured in `.chameleon.yml` (`schema.paths`, `./schemas` by default), merged as `migrate` does. `chameleon check` with no file and no stdin behaves the same way.
 </ParamField>
 
 ## Flags

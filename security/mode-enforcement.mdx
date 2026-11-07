@@ -73,7 +73,7 @@ For CI, set `CHAMELEON_MODE_PASSWORD`; the prompt needs a terminal, so piping th
 
 - Stored as a **salted SHA-256 hash** in `.chameleon/vault/mode_auth.json`, file mode `0600`
 - One round of SHA-256 is fast to brute-force if the file leaks, so use a long, unique password
-- The default `.chameleon/.gitignore` does not ignore `vault/`; add `.chameleon/vault/mode_auth.json` to your own `.gitignore`
+- The default `.chameleon/.gitignore` ignores `vault/mode_auth.json`; the rest of `vault/` stays versioned. Projects created before v1.1.2 get the rule the next time you run `config auth set-password`. If the file was already committed, run `git rm --cached` on it
 
 ## What is checked, and where
 

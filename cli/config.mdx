@@ -138,8 +138,10 @@ The password is not stored in plain text. A salted SHA-256 hash is written to:
 ```
 
 <Warning>
-  A single round of SHA-256 is fast to brute-force if the file leaks, and the file lives in the working tree. The default `.chameleon/.gitignore` created by `init` ignores `state/`, `journal/` and `backups/` but **not** `vault/`. Add `.chameleon/vault/mode_auth.json` to your `.gitignore` yourself, and use a long, unique password.
+  A single round of SHA-256 is fast to brute-force if the file leaks, and the file lives in the working tree. `.chameleon/.gitignore` ignores `vault/mode_auth.json` (`init` creates the rule and `config auth set-password` adds it to older projects), so it is not committed. A file that was committed before stays tracked: run `git rm --cached .chameleon/vault/mode_auth.json`. Use a long, unique password.
 </Warning>
+
+The rest of `vault/` (manifest, versions, hashes, integrity log) stays versioned. Because the verifier is not in the repository, each clone sets its own mode password.
 
 ---
 

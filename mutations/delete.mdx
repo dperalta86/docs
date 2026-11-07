@@ -15,7 +15,7 @@ description: Remove records; a filter is always required
   // SafetyError: DELETE without WHERE is blocked
   ```
 
-  The message suggests `ForceDeleteAll()`, but **that method does not exist** in the current API. There is no way to run an unfiltered delete through ChameleonDB. To empty a table, use SQL directly (`TRUNCATE` or `DELETE`) with the safeguards your environment requires.
+  There is no way to run an unfiltered delete through ChameleonDB. Add a `Filter()`. To empty a table, use SQL directly (`TRUNCATE` or `DELETE`) with the safeguards your environment requires.
 </Warning>
 
 ## Basic delete
@@ -42,7 +42,7 @@ result, err := eng.Delete("Post").
     Execute(ctx)
 ```
 
-Supported operators: `eq`, `neq` (or `ne`), `gt`, `gte`, `lt`, `lte`, `like`, `ilike`. As in updates, `like` uses the pattern you pass, there is no `IS NULL` filter, and dates are passed as strings. See [Safety Guards](/mutations/safety#filter-operators).
+Supported operators: `eq`, `neq` (or `ne`), `gt`, `gte`, `lt`, `lte`, `like`, `ilike`. As in updates, `like` means "contains", a `nil` value filters by `IS NULL` / `IS NOT NULL`, and dates are passed as strings. See [Safety Guards](/mutations/safety#filter-operators).
 
 ## Result
 
@@ -62,7 +62,7 @@ if result.Affected == 0 {
 
 Foreign key constraints are generated from has-many relations (`FOREIGN KEY (author_id) REFERENCES users(id)`) with PostgreSQL's default behavior: **no cascade**. The schema language has no `on_delete` option.
 
-Deleting a parent that still has children fails in PostgreSQL, and the error is returned as a `ForeignKeyError` (the `Field` and referenced-table details are parsed from PostgreSQL's message and may be approximate on deletes). Delete the children first:
+Deleting a parent that still has children fails in PostgreSQL, and the error is returned as a `ForeignKeyConstraintError` with the `DependentTable` (for example `posts`). Delete the children first:
 
 ```go
 _, err := eng.Delete("Post").
@@ -91,7 +91,7 @@ result, err := eng.Delete("User").
     Execute(ctx)
 
 if err != nil {
-    var fkErr *engine.ForeignKeyError
+    var fkErr *engine.ForeignKeyConstraintError
     if errors.As(err, &fkErr) {
         return fmt.Errorf("cannot delete: related records exist: %w", err)
     }
@@ -167,7 +167,7 @@ func (r *UserRepository) SoftDelete(ctx context.Context, id string) error {
 }
 ```
 
-Then filter on the flag when you read: `Filter("active", "eq", true)`. Avoid a nullable `deleted_at` filtered with `eq nil`; that does not match NULL rows.
+Then filter on the flag when you read: `Filter("active", "eq", true)`. A nullable `deleted_at` works too: `Filter("deleted_at", "eq", nil)` matches the rows where it is NULL.
 
 ## HTTP handler
 
@@ -183,7 +183,7 @@ func deleteUserHandler(w http.ResponseWriter, r *http.Request) {
         Filter("id", "eq", userID).
         Execute(r.Context())
     if err != nil {
-        var fkErr *engine.ForeignKeyError
+        var fkErr *engine.ForeignKeyConstraintError
         if errors.As(err, &fkErr) {
             http.Error(w, "Cannot delete: related records exist", http.StatusConflict)
             return

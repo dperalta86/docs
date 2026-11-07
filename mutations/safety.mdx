@@ -31,7 +31,7 @@ eng.Update("User").
 ```
 
 <Warning>
-  The error message suggests `ForceUpdateAll()` and `ForceDeleteAll()`. **These methods do not exist** in the current API, so there is currently no way to run an unfiltered update or delete through ChameleonDB. This is a known documentation bug in the message itself. If you need a full-table operation, run SQL directly against PostgreSQL.
+  There is no way to run an unfiltered update or delete through ChameleonDB; the error suggests using `Filter()`. If you need a full-table operation, run SQL directly against PostgreSQL.
 </Warning>
 
 Filters are combined with `AND`. Filtering on a field that is not in the entity returns an `UnknownFieldError` before reaching the database.
@@ -73,7 +73,8 @@ Integrity rules are left to the database, and the error is mapped to a typed err
 | Rule | Error |
 |------|-------|
 | `UNIQUE` | `UniqueConstraintError` |
-| Foreign key (parent missing on insert/update, or children exist on delete) | `ForeignKeyError` |
+| Foreign key, parent missing on insert/update | `ForeignKeyError` |
+| Foreign key, children exist on delete | `ForeignKeyConstraintError` |
 | `NOT NULL` | `NotNullError` |
 | `CHECK` | `ConstraintError` |
 
@@ -93,8 +94,9 @@ Mutation filters accept:
 Details that matter:
 
 - Values are bound as parameters (`$1`, `$2`, ...), never written into the SQL text. Table and column names are validated against the schema and quoted.
-- In mutations, `like` and `ilike` use **the pattern you pass**, so you add `%` yourself. This differs from the query builder, where `like` means "contains" and wildcards are escaped.
-- There is no `IS NULL` filter: `Filter("deleted_at", "eq", nil)` becomes `deleted_at = NULL`, which never matches in SQL.
+- `like` and `ilike` mean "contains", as in the query builder. The value is wrapped in `%...%` and `%`, `_` and `\` inside it are escaped, so they match literally.
+- A `nil` value filters by NULL: `Filter("deleted_at", "eq", nil)` becomes `deleted_at IS NULL` and `neq`/`ne` becomes `IS NOT NULL`. Any other operator with `nil` returns an error.
+- Filters are emitted in a fixed order (sorted by field and operator), so the same call always produces the same SQL.
 - A filter is keyed by field and operator. Calling `Filter("age", "gt", 18)` twice keeps only the last value; two different operators on the same field are both kept.
 - Filtering by a Go `time.Time` is not supported yet; pass a string.
 
@@ -127,7 +129,7 @@ case err != nil:
 }
 ```
 
-Other error types: `TypeMismatchError`, `FieldFormatError`, `UnknownEntityError`, `UnknownFieldError`, `ConstraintError`. (`ForeignKeyConstraintError` is defined but the database error mapper does not produce it today; foreign key violations arrive as `ForeignKeyError`, on delete too.) Mutation errors implement a `Code()` method (for example `UNIQUE_CONSTRAINT_VIOLATION`, `SAFETY_VIOLATION`) and `engine.IsMutationError(err)`.
+Other error types: `ForeignKeyConstraintError` (delete blocked by children, see above), `TypeMismatchError`, `FieldFormatError`, `UnknownEntityError`, `UnknownFieldError`, `ConstraintError`. Mutation errors implement a `Code()` method (for example `UNIQUE_CONSTRAINT_VIOLATION`, `SAFETY_VIOLATION`) and `engine.IsMutationError(err)`.
 
 ### Suggested HTTP mapping
 
@@ -138,13 +140,13 @@ This is a suggestion for web apps, not behavior of the library:
 | `SafetyError`, `NotNullError`, `FieldFormatError`, `TypeMismatchError`, unknown entity or field | 400 |
 | `ForeignKeyError` | 400 or 422 |
 | `UniqueConstraintError` | 409 |
-| `ForeignKeyError` on delete (children exist) | 409 |
+| `ForeignKeyConstraintError` (children exist on delete) | 409 |
 
 ## Practical habits
 
 1. **Validate input in your application** (formats, lengths) before calling the engine. The built-in checks are intentionally narrow.
 2. **Check `Affected`**. A filter that matches nothing is not an error.
-3. **Use `.Debug()` while developing.** It prints the SQL and the values, so do not enable it where logs contain sensitive data.
+3. **Use `.Debug()` while developing.** It prints the SQL and the values, with columns that look like secrets redacted. Do not enable it where logs contain personal data anyway.
 4. **Take backups** before bulk updates or deletes.
 5. **Wrap multi-step changes carefully.** ChameleonDB does not expose transactions yet, so each mutation is its own statement.
 

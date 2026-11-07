@@ -14,13 +14,17 @@ Debug mode prints the SQL that ChameleonDB generates, together with its paramete
 | Level | What it prints |
 |-------|----------------|
 | `.Debug()` | The generated SQL and its parameters |
-| `.DebugTrace()` | The above, plus a trace box with the SQL, duration and row count (queries only) |
+| `.DebugTrace()` | The above, plus the duration and row count (queries, eager queries and mutations) |
 
-You can also set a level for the whole engine with `eng.WithDebug(engine.DebugSQL)` or `engine.DebugTrace`.
+You can also set a level for the whole engine with `eng.WithDebug(engine.DebugSQL)` or `engine.DebugTrace`, or from the environment, without touching the code:
 
-<Note>
-  The `CHAMELEON_DEBUG` environment variable is defined in the code but is not read by the engine yet, so setting it has no effect.
-</Note>
+| `CHAMELEON_DEBUG` | Level |
+|-------------------|-------|
+| `1`, `true`, `sql` | SQL and parameters |
+| `trace` | Adds durations and row counts |
+| `explain` | Most verbose |
+
+A level set in code with `.Debug()` or `.DebugTrace()` wins over the environment.
 
 ## Queries
 
@@ -39,10 +43,10 @@ FROM "users"
 WHERE "email" LIKE $1 ESCAPE '\'
 
 [PARAMS]
-$1 = String("%ana%")
+$1 = "%ana%"
 ```
 
-The SQL text and the values are shown separately: values are sent to PostgreSQL as bound parameters and never written into the SQL. `like` in the query builder means "contains", so `ana` becomes `%ana%` with wildcards in the value escaped.
+The SQL text and the values are shown separately: values are sent to PostgreSQL as bound parameters and never written into the SQL. `like` means "contains", so `ana` is sent as `%ana%` with wildcards in the value escaped. Values of columns whose name contains `password`, `passwd`, `secret`, `token`, `api_key`, `apikey`, `private_key`, `credential`, `hash` or `salt` are printed as `[REDACTED]`.
 
 ### Trace
 
@@ -65,27 +69,22 @@ adds:
 
 ### Eager loading
 
-`.Debug()` prints the **main** query only. The queries that load `Include()` relations are not printed. To see them, use `ToSQL()`:
+`.Debug()` also prints the queries that load `Include()` relations, labeled with the relation:
 
 ```go
-generated, err := eng.Query("User").Include("posts").ToSQL()
-if err != nil {
-    return err
-}
-
-fmt.Println(generated.MainQuery)
-for _, eager := range generated.EagerQueries {
-    fmt.Println(eager[0], eager[1]) // relation name, SQL
-}
+eng.Query("User").Include("posts").Debug().Execute(ctx)
 ```
 
-An eager query looks like:
-
-```sql
+```
+[SQL] include posts
 SELECT ... FROM "posts" WHERE "author_id" = ANY($1)
 ```
 
-The parent IDs are bound at execution time (`$1` is the list of IDs collected from the main query).
+The parent IDs are bound at execution time (`$1` is the list of IDs collected from the main query). With `.DebugTrace()`, each eager query also reports its duration and row count. `ToSQL()` returns the same SQL without executing it:
+
+```go
+generated, err := eng.Query("User").Include("posts").ToSQL()
+```
 
 ## Mutations
 
@@ -100,13 +99,17 @@ eng.Update("User").
 ```
 [SQL] UPDATE User
 UPDATE "users" SET "name" = $1 WHERE "id" = $2 RETURNING *
-[VALUES] [Ana 550e8400-e29b-41d4-a716-446655440000]
+[PARAMS]
+$1 = Ana
+$2 = 550e8400-e29b-41d4-a716-446655440000
 ```
 
-Insert prints `[ENTITY] INSERT INTO <Entity>`, `[SQL]` and `[VALUES]`; delete prints `[SQL] DELETE FROM <Entity>`, the SQL and `[VALUES]`. Mutations print the real values, and `.Debug()` does not produce a trace line.
+Insert, update and delete all print `[SQL] <OPERATION> <Entity>`, the SQL and `[PARAMS]`. With `.DebugTrace()` (or `CHAMELEON_DEBUG=trace`) they also report the duration and the rows affected.
+
+Values of columns whose name contains `password`, `passwd`, `secret`, `token`, `api_key`, `apikey`, `private_key`, `credential`, `hash` or `salt` are printed as `[REDACTED]`. If the parameters cannot be matched to column names, all of them are redacted.
 
 <Warning>
-  Mutation debug output includes the actual values (emails, names, tokens). Do not enable it where logs may hold sensitive data.
+  The other values (emails, names, ids) are printed as they are. Do not enable mutation debug output where logs may hold personal data.
 </Warning>
 
 ## Troubleshooting queries

@@ -17,7 +17,7 @@ description: Modify existing records; a filter is always required
   // SafetyError: UPDATE requires a WHERE clause
   ```
 
-  The message suggests `ForceUpdateAll()`, but **that method does not exist** in the current API. There is no way to run an unfiltered update through ChameleonDB.
+  There is no way to run an unfiltered update through ChameleonDB. Add a `Filter()`.
 </Warning>
 
 ## Basic update
@@ -58,8 +58,8 @@ result, err := eng.Update("Post").
 
 Supported operators: `eq`, `neq` (or `ne`), `gt`, `gte`, `lt`, `lte`, `like`, `ilike`. Notes:
 
-- In mutations `like` and `ilike` use the pattern as you pass it, so include the `%` yourself.
-- There is no `IS NULL` filter. `Filter("x", "eq", nil)` becomes `x = NULL`, which matches nothing.
+- `like` and `ilike` mean "contains", as in queries: `Filter("name", "like", "ana")` matches `%ana%`. `%`, `_` and `\` in the value match literally.
+- `Filter("x", "eq", nil)` becomes `x IS NULL` and `Filter("x", "neq", nil)` becomes `x IS NOT NULL`. Any other operator with `nil` returns an error.
 - Setting the same field and operator twice keeps only the last value.
 - Pass dates as strings, for example `"2026-01-01"`. A Go `time.Time` is not supported in filters yet.
 

@@ -135,7 +135,7 @@ fi
 
 ## Debug output
 
-`.Debug()` prints parameters for queries and the actual values for mutations. Do not enable it where logs may contain emails, tokens or other personal data.
+Debug output prints parameter values, except those of columns that look like secrets (`password`, `token`, `secret`, `hash`, ...), which are `[REDACTED]`. Emails, names and ids are printed, so do not enable debug output (`.Debug()` or `CHAMELEON_DEBUG`) where logs may contain personal data.
 
 ## Monitoring
 

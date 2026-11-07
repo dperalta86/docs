@@ -16,7 +16,7 @@ Display current status of schema, vault, and configuration.
 The `status` command shows the current schema version, the vault state and the integrity mode.
 
 <Note>
-  `status` reads `schema.cham` from the current directory. In projects created with `chameleon init`, where schemas live in `schemas/`, the schema section may report the file as missing even when the vault is healthy. Use [`chameleon verify`](/cli/verify) for the integrity check and `chameleon migrate --dry-run` to compare the schema against the vault.
+  `status` compares the project schemas (`schema.paths`, merged as `migrate` does) with the version registered in the vault, and reports when it cannot read them.
 </Note>
 
 ## Examples
