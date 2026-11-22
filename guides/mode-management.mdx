@@ -40,7 +40,7 @@ Choose mode password (min 8 chars): ********
 ```
 
 - Minimum 8 characters.
-- Stored as a **salted SHA-256 hash** in `.chameleon/vault/mode_auth.json` (file mode `0600`). One round of SHA-256 is fast to brute-force if the file leaks, so use a long, unique password.
+- Stored as an **Argon2id verifier** in `.chameleon/vault/mode_auth.json` (file mode `0600`).
 - The default `.chameleon/.gitignore` does not ignore `vault/`. Add `.chameleon/vault/mode_auth.json` to your own `.gitignore`.
 - Without a password, an upgrade fails with `mode password not configured`.
 

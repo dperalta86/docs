@@ -40,6 +40,10 @@ chameleon version
   Mode password for non-interactive use (for example in CI). It is used by `config set mode=...` and `config auth set-password`. Treat it like any other secret.
 </ParamField>
 
+<ParamField path="CHAMELEON_MODE_PASSWORD_NEW" type="string">
+  New mode password when `config auth set-password` rotates an existing password without an interactive prompt. `CHAMELEON_MODE_PASSWORD` must contain the current password.
+</ParamField>
+
 <ParamField path="USER" type="string">
   Recorded as the author of each schema version registered by `migrate`. Defaults to `unknown`.
 </ParamField>
@@ -73,11 +77,7 @@ chameleon version
 - `chameleon version` - Show the version
 - `chameleon query [entity]` - Run queries from the terminal (for testing)
 - `chameleon uninstall` - Remove ChameleonDB from your system
-- `chameleon dashboard serve` and `chameleon playground-sql serve` - Local development servers
-
-<Warning>
-  The dashboard and playground servers are meant for local development. Do not expose them on a network.
-</Warning>
+- `chameleon playground-sql serve` - Local SQL playground server
 
 ## Project structure
 
@@ -93,7 +93,7 @@ After `chameleon init`:
 │   └── backups/
 ├── schemas/                # Schema files
 │   └── example.cham        # Example schema
-└── README.md
+└── CHAMELEON.md
 ```
 
 The Schema Vault (`.chameleon/vault/`) is created by the first `chameleon migrate`.

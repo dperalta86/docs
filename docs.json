@@ -80,6 +80,7 @@
               "guides/migrations",
               "guides/introspection",
               "guides/mode-management",
+              "guides/agents",
               "guides/debugging"
             ]
           },

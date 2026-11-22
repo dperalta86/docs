@@ -26,13 +26,15 @@ ChameleonDB is built from a Rust core and a Go CLI. Prebuilt archives are publis
     The script:
     - Detects your platform and architecture
     - Downloads the latest release archive from GitHub
+    - Verifies the archive checksum
     - Installs the `chameleon` binary to `/usr/local/bin`, the native library to `/usr/local/lib` and the C header to `/usr/local/include`
 
     It uses `sudo` to write to those directories. To install elsewhere, set `CHAMELEON_INSTALL_DIR` and `CHAMELEON_LIB_DIR` before running it.
 
-    <Warning>
-      The script does not verify checksums. Read it before running it (`curl -sSL https://chameleondb.dev/install`), or use the manual or source installation below.
-    </Warning>
+    <Note>
+      If `CHAMELEON_LIB_DIR` is not `/usr/local/lib`, export `LD_LIBRARY_PATH` on Linux or `DYLD_LIBRARY_PATH` on macOS with that directory so the runtime can find the shared library.
+    </Note>
+
 
     ### Verify
 

@@ -10,8 +10,12 @@ description: Load related rows with Include() and avoid N+1 queries
 </Warning>
 
 <Note>
-  `Include()` works with **has-many** relations, the ones declared with `via` (for example `orders: [Order] via user_id`). Including a belongs-to relation such as `author: User` fails with a missing-foreign-key error. To get the parent of a row, query the parent entity directly.
+  `Include()` works with has-many and belongs-to relations. A belongs-to relation such as `author: User` is loaded with the relation's resolved key and skips `NULL` keys. Its key can come from the other has-many relation's `via`, or from a field named `<relation>_id`.
 </Note>
+
+<Warning>
+  The implementation limitation for relation filters is separate: filters through two or more relations are not supported and fail validation. Use one relation level per filter.
+</Warning>
 
 ## Include
 

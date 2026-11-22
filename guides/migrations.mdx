@@ -73,6 +73,20 @@ Summary:
 
 The first `--apply` creates the vault and registers `v001`.
 
+After that apply, an interactive terminal offers to set a mode password and switch to `standard`. Scripts can use:
+
+```bash
+CHAMELEON_MODE_PASSWORD="your-password" \
+  chameleon migrate --apply --no-input --set-mode standard
+```
+
+If the project remains in `readonly`, the apply output lists:
+
+```bash
+chameleon config auth set-password
+chameleon config set mode=standard
+```
+
 ## Workflow
 
 <Steps>
@@ -198,6 +212,7 @@ This detects changes to the vault files; it does not prove who made them. See [S
 ## Limits to know
 
 - **No backup.** `features.backup_on_migrate` is not implemented; `migrate --apply` prints a warning saying no backup was created. Back up with `pg_dump` yourself.
+- **No planned config effects.** `rollback_enabled`, `audit_logging`, `backup_on_migrate` and `backup_before_apply` are not implemented. Setting any of them to `true` produces a warning.
 - **Not wrapped in a transaction.** The script runs as one statement batch; do not assume atomic rollback.
 - **No rollback command.**
 - **Timeouts.** 30 seconds for the command, 10 seconds to connect.

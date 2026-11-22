@@ -43,11 +43,14 @@ chameleon version
     chameleon init
     ```
 
+    The init wizard asks how to connect when a terminal is available. It can keep `${DATABASE_URL}`, detect a PostgreSQL connection, or create a PostgreSQL 16 Compose setup. For automation, use `--no-input`; `--db-url`, `--detect-db`, `--compose` and `--no-example` provide the corresponding choices.
+
     **What it creates:**
     - `.chameleon/` with local state, journal and backups (not meant for version control)
     - `.chameleon.yml` with the project configuration
     - `schemas/example.cham`, an example schema
-    - a `README.md` for the project
+    - a `CHAMELEON.md` for the project
+    - `.env.example` when the wizard selects a database connection
 
     The Schema Vault (`.chameleon/vault/`) is created by your first `chameleon migrate`, and starts in `readonly` mode.
 
@@ -61,7 +64,7 @@ chameleon version
 
     ```go schemas/example.cham
     entity User {
-        id: uuid primary,
+        id: uuid primary default uuid(),
         email: string unique,
         name: string,
         created_at: timestamp default now(),
@@ -69,7 +72,7 @@ chameleon version
     }
 
     entity Post {
-        id: uuid primary,
+        id: uuid primary default uuid(),
         title: string,
         content: string,
         published: bool default false,
@@ -108,19 +111,15 @@ chameleon version
     This prints the SQL without applying it. For the schema above, the script has this shape (the order of the columns inside each table can vary between runs):
 
     ```sql
-    DROP TABLE IF EXISTS posts CASCADE;
-
-    DROP TABLE IF EXISTS users CASCADE;
-
     CREATE TABLE users (
-        id UUID PRIMARY KEY,
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         name VARCHAR NOT NULL,
         email VARCHAR NOT NULL UNIQUE,
         created_at TIMESTAMP NOT NULL DEFAULT NOW()
     );
 
     CREATE TABLE posts (
-        id UUID PRIMARY KEY,
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         title VARCHAR NOT NULL,
         content VARCHAR NOT NULL,
         published BOOLEAN NOT NULL DEFAULT false,
@@ -130,14 +129,14 @@ chameleon version
     );
     ```
 
-    Read it before you apply it: the `DROP TABLE` statements remove existing tables and their data.
+    Read it before you apply it. ChameleonDB's generated script is create-only: it does not alter or drop existing tables.
   </Step>
 
   <Step title="Raise the mode and apply">
     The first `chameleon migrate --apply` is not blocked. It creates the vault in `readonly` mode, so **later** migrations are blocked until you run `chameleon config auth set-password` and `chameleon config set mode=standard`.
 
     <Warning>
-      `migrate --apply` drops and recreates every table in your schema. Point it at an empty or disposable database and read `--dry-run` first. See [`chameleon migrate`](/cli/migrate).
+      `migrate --apply` is create-only. It does not alter or drop existing tables. Point it at an empty or disposable database and read `--dry-run` first. See [`chameleon migrate`](/cli/migrate).
     </Warning>
 
     ```bash
@@ -146,7 +145,7 @@ chameleon version
     chameleon migrate --apply
     ```
 
-    `migrate --apply` verifies the vault, registers the schema as `v001` (with its SHA-256 hash), and then runs the SQL against your database.
+    `migrate --apply` verifies the vault, registers the schema as `v001` (with its SHA-256 hash), and then runs the SQL against your database. After the first apply, the output tells you whether the project remains in `readonly` and how to set a password and switch to `standard`.
   </Step>
 
   <Step title="Inspect the history">

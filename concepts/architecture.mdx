@@ -7,8 +7,6 @@ ChameleonDB is a **schema-first governance layer for PostgreSQL**: you describe 
 
 ## System overview
 
-![System Overview diagram](../diagrams/system_overview.png)
-
 ## Layers
 
 ```
@@ -58,7 +56,7 @@ Alongside, driven by the CLI:
 - **Query executor** - Sends the generated SQL and parameters to PostgreSQL through pgx.
 - **Error mapping** - Maps PostgreSQL errors to ChameleonDB errors.
 - **IdentityMap** - Deduplicates parent objects in memory when you use `.Include()`.
-- **CLI** - `init`, `migrate`, `validate`, `check`, `verify`, `status`, `journal`, `config`, `introspect`, `query`, `version`, `uninstall`, plus local `dashboard` and `playground-sql` servers.
+- **CLI** - `init`, `migrate`, `validate`, `check`, `verify`, `status`, `journal`, `config`, `introspect`, `query`, `version`, `uninstall`, plus the local `playground-sql` server.
 
 <Warning>
   `NewEngineForCLI()` is exported and skips the vault checks. It exists for the CLI and tests. Applications should use `NewEngine()`. The vault is a consistency check, not a barrier that prevents a Go program from loading a different schema.
@@ -96,8 +94,6 @@ The Rust core is compiled as a library and called from Go through a C ABI (cgo).
 On Windows the release archive includes `chameleon.dll`, which must stay next to `chameleon.exe`.
 
 ## Compilation and validation flow
-
-![Compilation Flow](../diagrams/Compilation_Flow.png)
 
 ```
 .cham files

@@ -17,6 +17,18 @@ Creates a new engine instance with automatic schema loading from the vault.
 func NewEngine() (*Engine, error)
 ```
 
+### NewEngineAt()
+
+Creates an engine for a project directory when the process is not running from the project root:
+
+```go
+func NewEngineAt(projectDir string) (*Engine, error)
+```
+
+`NewEngine()` searches `CHAMELEON_PROJECT_DIR` when it is set. Otherwise, it uses the current working directory. Relative paths in `.chameleon.yml` are resolved against the project directory.
+
+Both initialization functions report the directory that was searched. A missing vault names the required `chameleon migrate --apply` step or the project-location options. An integrity failure names the check that failed.
+
 **Behavior:**
 - Uses the current working directory, so run your program from the project directory
 - Loads the schema from the merged schema path (default `.chameleon/state/schema.merged.cham`, configurable in `.chameleon.yml`)
@@ -327,7 +339,7 @@ Accepted values are `1` (SQL), `trace` (SQL, timing and row counts) and `explain
 ### Common Errors
 
 <ResponseField name="vault not initialized" type="error">
-  The Schema Vault hasn't been initialized. Run `chameleon init` first.
+  The Schema Vault has not been initialized in the searched project directory. Run `chameleon migrate --apply` or pass the project directory with `NewEngineAt`.
 </ResponseField>
 
 <ResponseField name="integrity check failed" type="error">

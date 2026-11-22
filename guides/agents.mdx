@@ -1,0 +1,122 @@
+---
+title: Use with coding agents
+description: Run ChameleonDB commands safely and parse machine-readable output in coding agents
+---
+
+Use ChameleonDB through explicit commands. Review changes before applying them and keep agent credentials separate from application and human credentials.
+
+## Recommended sequence
+
+Run commands in this order:
+
+```bash
+chameleon init --no-input
+chameleon validate schemas/*.cham
+chameleon migrate --check
+chameleon migrate --dry-run
+chameleon migrate --apply --no-input
+chameleon verify
+```
+
+Use `--no-input` for automation. It prevents prompts and is also used automatically without a terminal or with `CI` set.
+
+<Warning>
+  `migrate --apply` can have database side effects. Give the agent no credentials that it is not authorized to use, and apply migrations only through an approved workflow.
+</Warning>
+
+## Machine-readable output
+
+Commands that support machine-readable output use `--json`. Text meant for people is not written to stdout in this mode.
+
+```bash
+chameleon validate --json
+chameleon status --json
+chameleon verify --json
+chameleon migrate --check --json
+chameleon migrate --dry-run --json
+chameleon migrate --apply --json
+chameleon introspect --json
+chameleon check --json
+```
+
+The output envelope is:
+
+```json
+{
+  "schema_version": 1,
+  "command": "...",
+  "ok": true,
+  "data": {},
+  "errors": []
+}
+```
+
+Every error has a stable code, message and optional hint:
+
+```json
+{
+  "schema_version": 1,
+  "command": "validate",
+  "ok": false,
+  "data": {},
+  "errors": [
+    {
+      "code": "schema_invalid",
+      "message": "...",
+      "hint": "..."
+    }
+  ]
+}
+```
+
+Do not scrape text output. Use `errors[].code`, `ok` and the exit code.
+
+## Exit codes
+
+| Exit code | Class | Meaning |
+|-----------|-------|---------|
+| `0` | Success | The command completed successfully |
+| `1` | Unexpected | An unexpected or unclassified failure |
+| `2` | Usage | Invalid arguments or command usage |
+| `3` | Validation | The schema or another input is invalid |
+| `4` | Blocked | A mode or policy blocked the operation |
+| `5` | Integrity | Schema Vault or mode consistency failed |
+| `6` | Connection | The database connection failed |
+
+Stable error codes include:
+
+| Code | Exit code | Meaning |
+|------|-----------|---------|
+| `schema_invalid` | `3` | Schema validation failed |
+| `mode_blocked` | `4` | An integrity mode blocked the operation |
+| `integrity_failed` | `5` | Vault or mode integrity failed |
+| `connection_failed` | `6` | PostgreSQL could not be reached or used |
+
+## Integrity modes
+
+The modes are guards against accidental schema changes and workflow stages:
+
+- `readonly` blocks `migrate` and `introspect` after a schema version exists
+- `standard` allows migration and introspection
+- `privileged` and `emergency` add workflow restrictions for configuration operations
+
+The modes are not access control. Anyone who can edit `.chameleon/vault/` or run the CLI with the project's permissions can change them. Database credentials remain the real enforcement boundary.
+
+Editing `mode.json` outside the CLI is detected by `verify`, `migrate` and the Go engine. It is not prevented, and editing the plain-text integrity log together can evade that check.
+
+## Never do this
+
+- Never edit `.chameleon/vault/` files directly.
+- Never commit `.env`, database URLs or `.chameleon/vault/mode_auth.json`.
+- Never expose `CHAMELEON_MODE_PASSWORD` or `CHAMELEON_MODE_PASSWORD_NEW` in logs.
+- Never use `--no-input` to bypass an integrity gate or a required review.
+- Never claim that an integrity mode blocks direct database writes or that Vault hashes prevent tampering.
+- Never use `DROP`, destructive SQL or manual DDL as a substitute for the current create-only `migrate` workflow without a reviewed recovery plan.
+
+## Credential separation
+
+Use separate database identities as proposed by ADR-0006: an application role for services and agents, a migrator role only for approved migration workflows, and an observer role for catalog reads. An agent with privileged database credentials can bypass ChameleonDB's local modes. Review the actual PostgreSQL privileges; do not treat a mode setting as a database permission.
+
+## MCP
+
+No MCP server is currently included in this documentation workflow. When `chameleon mcp serve` ships, register it explicitly in the coding-agent configuration and keep database credentials in the MCP process or secret store. Review the server's tool list and permission boundary before enabling it.

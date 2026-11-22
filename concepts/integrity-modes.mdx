@@ -1,6 +1,6 @@
 ---
 title: Integrity Modes
-description: A local gate on schema-changing commands, with password-protected upgrades
+description: Local guards for schema-changing commands and the limits of their password protection
 ---
 
 Integrity Modes are a **local safeguard** on the commands that change your schema or generate one from a database. A mode is stored in the Schema Vault; moving to a less restrictive mode asks for a password.
@@ -55,9 +55,10 @@ Without a password, an upgrade fails with `mode password not configured`, so a v
 ## Passwords
 
 - The password is required to move to a **less** restrictive mode (`readonly` to `standard`, and so on). Moving to a more restrictive mode does not need one.
-- It is stored as a salted SHA-256 hash in `.chameleon/vault/mode_auth.json` (file mode `0600`). A single round of SHA-256 is fast to brute-force if the file leaks, so use a long, unique password.
+- It is stored as an Argon2id verifier in `.chameleon/vault/mode_auth.json` (file mode `0600`).
 - For CI, set `CHAMELEON_MODE_PASSWORD` instead of typing it.
-- The default `.chameleon/.gitignore` does not ignore `vault/`. Add `.chameleon/vault/mode_auth.json` to your own `.gitignore` so the verifier is not committed.
+- Changing an existing password requires the current password. In a non-interactive script, set `CHAMELEON_MODE_PASSWORD` to the current password and `CHAMELEON_MODE_PASSWORD_NEW` to the replacement.
+- The default `.chameleon/.gitignore` ignores `vault/mode_auth.json`. Do not commit it.
 
 ## Where the mode lives
 
@@ -67,7 +68,7 @@ Without a password, an upgrade fails with `mode password not configured`, so a v
 | `.chameleon/vault/mode_auth.json` | Salt and hash of the password |
 | `.chameleon/vault/manifest.json` | A legacy copy of the mode, for compatibility |
 
-`mode.json` is not covered by the vault's hash verification. Editing it by hand changes the mode without a password and without an audit entry. That is why this is a safeguard and not a control.
+`mode.json` is compared with the last mode change recorded in the integrity log by `verify`, `migrate` and the Go engine. Editing `mode.json` outside the CLI is detected by them as an integrity failure. This detection does not prevent the edit, and editing both `mode.json` and the plain-text log together is not detected.
 
 ## Checking the mode
 

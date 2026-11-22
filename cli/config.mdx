@@ -120,25 +120,34 @@ Changing where schemas are loaded from can change what gets applied to your data
 chameleon config auth set-password
 ```
 
-Set the mode password, or replace it. The minimum length is 8 characters.
+Set the first mode password. The minimum length is 8 characters.
 
 ```
 Choose mode password (min 8 chars): ********
+Repeat mode password: ********
 ✓ Mode password configured
 ```
 
 For non-interactive use, set `CHAMELEON_MODE_PASSWORD` instead of typing it.
 
+To change an existing password, you must provide the current password. An interactive prompt asks for the old password and then asks for the new password twice. In scripts, set both:
+
+```bash
+CHAMELEON_MODE_PASSWORD="$CURRENT_PASSWORD" \
+CHAMELEON_MODE_PASSWORD_NEW="$NEW_PASSWORD" \
+chameleon config auth set-password
+```
+
 ### Where it is stored
 
-The password is not stored in plain text. A salted SHA-256 hash is written to:
+The password is not stored in plain text. An Argon2id verifier is written to:
 
 ```
 .chameleon/vault/mode_auth.json
 ```
 
 <Warning>
-  A single round of SHA-256 is fast to brute-force if the file leaks, and the file lives in the working tree. `.chameleon/.gitignore` ignores `vault/mode_auth.json` (`init` creates the rule and `config auth set-password` adds it to older projects), so it is not committed. A file that was committed before stays tracked: run `git rm --cached .chameleon/vault/mode_auth.json`. Use a long, unique password.
+  The file lives in the working tree. `.chameleon/.gitignore` ignores `vault/mode_auth.json` (`init` creates the rule and `config auth set-password` adds it to older projects), so it is not committed. A file that was committed before stays tracked: run `git rm --cached .chameleon/vault/mode_auth.json`. Use a long, unique password.
 </Warning>
 
 The rest of `vault/` (manifest, versions, hashes, integrity log) stays versioned. Because the verifier is not in the repository, each clone sets its own mode password.
@@ -193,17 +202,19 @@ schema:
 
 features:
   auto_migration: true
-  rollback: true
-  backup_on_migrate: true
-  audit_logging: true
+  dry_run_default: false
+  rollback_enabled: false       # Planned, not implemented
+  audit_logging: false          # Planned, not implemented
+  backup_on_migrate: false      # Planned, not implemented
 
 safety:
-  validation: true
-  confirmation: false
+  require_confirmation: false
+  validate_schema: true
+  backup_before_apply: false    # Planned, not implemented
 ```
 
 <Note>
-  Not every key has behavior behind it yet. For example, `backup_on_migrate` only prints a message and `rollback` is not implemented. The mode password hash is **not** stored here.
+  Not every key has behavior behind it. `rollback_enabled`, `audit_logging`, `backup_on_migrate` and `backup_before_apply` are planned and have no effect. Files that set one of these keys to `true` produce a warning on every command. The mode password hash is **not** stored here.
 </Note>
 
 ## Troubleshooting

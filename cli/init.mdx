@@ -6,10 +6,10 @@ description: 'Initialize a new ChameleonDB project'
 ## Synopsis
 
 ```bash
-chameleon init [name]
+chameleon init [name] [--db-url <url>] [--compose] [--detect-db] [--no-example] [--no-input]
 ```
 
-Create a new ChameleonDB project with schema files and configuration.
+Run the initialization wizard to create a new ChameleonDB project with schema files and configuration.
 
 ## Description
 
@@ -18,10 +18,40 @@ Initializes a ChameleonDB project by creating:
 - `.chameleon.yml` - Main configuration file
 - `.chameleon/` - Admin directory (config, state, journal, backups)
 - `schemas/` - Directory for schema files
-- `schemas/example.cham` - Example schema to get started
-- `README.md` - Getting started guide
+- `schemas/example.cham` - Example schema, unless `--no-example` or an existing `.cham` file is found
+- `CHAMELEON.md` - Getting started guide
+- `.env.example` - Created or appended with a `DATABASE_URL` block when a database connection is selected
+- `docker-compose.yml` - PostgreSQL 16, only when requested with `--compose`
 
 If a project name is provided, creates a new directory. Otherwise, initializes in the current directory.
+
+The wizard can keep `${DATABASE_URL}`, detect an existing PostgreSQL connection, use `--db-url`, or create a PostgreSQL 16 Compose setup. When no terminal is attached, with `CI` set, or with `--no-input`, it does not ask questions.
+
+<Warning>
+  `init` never overwrites project files it did not create. It does not replace an existing `README.md` or `CHAMELEON.md`, existing Compose files, or `.env.example` content that already contains `DATABASE_URL`. It creates an example schema only when `schemas/` contains no `.cham` file.
+</Warning>
+
+## Flags
+
+<ParamField path="--db-url" type="string">
+  Use this PostgreSQL connection string. The value is printed as an export line and the configuration keeps `${DATABASE_URL}`.
+</ParamField>
+
+<ParamField path="--compose" type="boolean" default="false">
+  Write a PostgreSQL 16 `docker-compose.yml`. An existing Compose file is not overwritten.
+</ParamField>
+
+<ParamField path="--detect-db" type="boolean" default="false">
+  Use the first PostgreSQL connection found in the environment, `.env` files or Compose files.
+</ParamField>
+
+<ParamField path="--no-example" type="boolean" default="false">
+  Do not create `schemas/example.cham`.
+</ParamField>
+
+<ParamField path="--no-input" type="boolean" default="false">
+  Never ask questions. This also applies without a terminal or with `CI` set.
+</ParamField>
 
 ## Arguments
 
@@ -36,7 +66,7 @@ If a project name is provided, creates a new directory. Otherwise, initializes i
 ### Initialize in New Directory
 
 ```bash
-chameleon init my-project
+chameleon init my-project --detect-db --no-example
 ```
 
 **Output:**
@@ -48,8 +78,8 @@ chameleon init my-project
 ✓ Created .chameleon.yml
 ℹ Creating schemas/ directory...
 ✓ Created schemas/example.cham
-ℹ Creating README.md...
-✓ Created README.md
+ℹ Creating CHAMELEON.md...
+✓ Created CHAMELEON.md
 
 ✓ Project initialized successfully!
 
@@ -62,7 +92,7 @@ Structure created:
     └── backups/        Backup files (not versioned)
   schemas/              Schema files
     └── example.cham    Example schema
-  README.md             Getting started guide
+  CHAMELEON.md          Getting started guide
 
 Next steps:
   cd my-project
@@ -85,7 +115,7 @@ chameleon init
 ✓ Created .chameleon/ directory
 ✓ Created .chameleon.yml
 ✓ Created schemas/example.cham
-✓ Created README.md
+✓ Created CHAMELEON.md
 
 ✓ Project initialized successfully!
 ```
@@ -108,13 +138,15 @@ schema:
 
 features:
   auto_migration: true
-  rollback: true
-  backup_on_migrate: true
-  audit_logging: true
+  dry_run_default: false
+  rollback_enabled: false       # Planned, not implemented
+  audit_logging: false          # Planned, not implemented
+  backup_on_migrate: false      # Planned, not implemented
 
 safety:
-  validation: true
-  confirmation: false
+  require_confirmation: false
+  validate_schema: true
+  backup_before_apply: false    # Planned, not implemented
 ```
 
 ### schemas/example.cham
@@ -126,7 +158,7 @@ Starter schema with blog example:
 // This is a simple blog schema to get you started
 
 entity User {
-    id: uuid primary,
+    id: uuid primary default uuid(),
     email: string unique,
     name: string,
     created_at: timestamp default now(),
@@ -237,7 +269,7 @@ The vault is created by the first migration, so the password can only be set aft
 
 ## Version Control
 
-Commit `.chameleon.yml`, `schemas/` and `README.md`. `init` already writes a `.chameleon/.gitignore` for `state/`, `journal/` and `backups/`. Add this to your project `.gitignore`:
+Commit `.chameleon.yml`, `schemas/` and `CHAMELEON.md`. `init` writes a `.chameleon/.gitignore` that excludes local state and the mode password. Add these entries to your project `.gitignore` when needed:
 
 ```gitignore
 .chameleon/vault/mode_auth.json

@@ -102,7 +102,8 @@ WHERE "orders"."total" > $1
 Constraints:
 
 - Only one level: `orders.total` works, `orders.items.price` is rejected
-- Filtering through a belongs-to relation (for example `Order` filtered by `user.name`) fails with a missing-foreign-key error
+- Filtering through two or more relations is not supported
+- Filtering through a belongs-to relation now works when the relation key is resolvable
 - With `DISTINCT`, PostgreSQL needs every `OrderBy` field to appear in the select list; if you use `Select()` with a relation filter, include the fields you sort by
 
 ## Relation filter plus include

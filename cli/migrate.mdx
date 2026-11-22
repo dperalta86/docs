@@ -21,7 +21,7 @@ By default it only shows what would happen. Nothing touches the database unless 
 
 For the schema as a whole, the script contains:
 
-1. One CREATE TABLE IF NOT EXISTS "<table>" (...) per entity, in dependency order, with primary keys, unique constraints, defaults and foreign keys.
+1. One `CREATE TABLE IF NOT EXISTS "<table>" (...)` per entity, in dependency order, with primary keys, unique constraints, defaults and foreign keys.
 2. Columns are ordered primary key first, then alphabetically; the output is deterministic.
 
 There is no diff against the live database. The script is the same whether the tables exist or not, and whether the schema changed by one field or by fifty.
@@ -49,6 +49,14 @@ There is no diff against the live database. The script is the same whether the t
 
 <ParamField path="--apply" type="boolean" default="false">
   Execute the migration against the database in `DATABASE_URL` (or the connection string in `.chameleon.yml`).
+</ParamField>
+
+<ParamField path="--no-input" type="boolean" default="false">
+  Never ask questions. This also applies when no terminal is attached or `CI` is set.
+</ParamField>
+
+<ParamField path="--set-mode" type="string">
+  After the first `--apply` creates the vault, switch to `standard`. It requires `CHAMELEON_MODE_PASSWORD`.
 </ParamField>
 
 ## Examples
@@ -116,7 +124,24 @@ Summary:
   Hash:     3f2a8b9c1d4e5f60...
   Duration: 42ms
   Status:   applied
+
+Paranoid mode: readonly
+  The schema is now locked: another 'migrate --apply' will be refused.
+  To change the schema later:
+    1. chameleon config auth set-password
+    2. chameleon config set mode=standard
 ```
+
+After the first apply, an interactive terminal may offer to set a mode password and switch to `standard`.
+
+For a script or CI run, use:
+
+```bash
+CHAMELEON_MODE_PASSWORD="your-password" \
+  chameleon migrate --apply --no-input --set-mode standard
+```
+
+`--set-mode standard` only takes effect after the migration that creates the vault. It requires `CHAMELEON_MODE_PASSWORD`.
 
 ### No changes
 

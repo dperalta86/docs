@@ -35,8 +35,8 @@ chameleon config auth set-password
 ```
 
 - ChameleonDB requires at least **8** characters. Use 16 or more, unique, from a password manager.
-- It is stored as a salted single-round SHA-256 hash in `.chameleon/vault/mode_auth.json`. If that file leaks, a weak password can be brute-forced quickly.
-- Rotate with the same command after personnel changes or suspected exposure.
+- It is stored as an Argon2id verifier in `.chameleon/vault/mode_auth.json`.
+- Changing an existing password requires the current password. Interactive use asks twice for the new password. In scripts, set `CHAMELEON_MODE_PASSWORD` to the current password and `CHAMELEON_MODE_PASSWORD_NEW` to the replacement.
 
 ### CI
 

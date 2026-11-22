@@ -71,8 +71,9 @@ For CI, set `CHAMELEON_MODE_PASSWORD`; the prompt needs a terminal, so piping th
 
 ## Password storage
 
-- Stored as a **salted SHA-256 hash** in `.chameleon/vault/mode_auth.json`, file mode `0600`
-- One round of SHA-256 is fast to brute-force if the file leaks, so use a long, unique password
+- Stored as an **Argon2id verifier** in `.chameleon/vault/mode_auth.json`, file mode `0600`
+- Existing SHA-256 verifiers are verified once and upgraded to Argon2id
+- Changing an existing password requires `CHAMELEON_MODE_PASSWORD` for the current password and `CHAMELEON_MODE_PASSWORD_NEW` for the replacement in non-interactive use
 - The default `.chameleon/.gitignore` ignores `vault/mode_auth.json`; the rest of `vault/` stays versioned. Projects created before v1.1.2 get the rule the next time you run `config auth set-password`. If the file was already committed, run `git rm --cached` on it
 
 ## What is checked, and where
@@ -91,7 +92,7 @@ chameleon migrate --apply
 5. Register a version, run the SQL
 ```
 
-The mode is read from `.chameleon/vault/mode.json`, which the hash check does not cover.
+The mode is read from `.chameleon/vault/mode.json`. `verify`, `migrate` and the Go engine compare it with the last mode change recorded in the integrity log. An edited `mode.json` is detected, but the edit is not prevented and editing the plain-text log together can evade this check.
 
 ## Checking the mode
 
